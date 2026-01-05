@@ -173,6 +173,17 @@ class ProfileDialog(Gtk.Window):
             username_label.add_css_class("dim-label")
             self._content_box.append(username_label)
 
+        # Status (online/last seen)
+        status = info.get("status", "")
+        if status:
+            self._status_label = Gtk.Label(label=status)
+            self._status_label.set_xalign(0)
+            if info.get("is_online"):
+                self._status_label.add_css_class("success")
+            else:
+                self._status_label.add_css_class("dim-label")
+            self._content_box.append(self._status_label)
+
         # Badges (verified, premium, bot)
         badges = []
         if info.get("verified"):
@@ -250,9 +261,13 @@ class ProfileDialog(Gtk.Window):
         self.set_title(f"Profile - {full_name}")
 
         # Update accessibility
+        status = info.get("status", "")
+        accessible_parts = [f"Profile for {full_name}"]
+        if status:
+            accessible_parts.append(status)
         self.update_property(
             [Gtk.AccessibleProperty.LABEL],
-            [f"Profile for {full_name}"],
+            [", ".join(accessible_parts)],
         )
 
     def _on_message_clicked(self, button: Gtk.Button) -> None:

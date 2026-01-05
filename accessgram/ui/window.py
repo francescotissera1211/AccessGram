@@ -33,16 +33,20 @@ logger = logging.getLogger(__name__)
 class ChatRow(Gtk.ListBoxRow):
     """A row in the chat list representing a dialog."""
 
-    def __init__(self, dialog: Any, muted: bool = False) -> None:
+    def __init__(
+        self, dialog: Any, muted: bool = False, client: AccessGramClient | None = None
+    ) -> None:
         """Initialize a chat row.
 
         Args:
             dialog: The Telethon Dialog object.
             muted: Whether the chat is muted.
+            client: Optional Telegram client for getting user status.
         """
         super().__init__()
         self.dialog = dialog
         self._muted = muted
+        self._client = client
         self._build_ui()
         self._update_accessibility()
 
@@ -58,12 +62,22 @@ class ChatRow(Gtk.ListBoxRow):
         info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         info_box.set_hexpand(True)
 
-        # Chat name
+        # Chat name with optional status
+        name_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._name_label = Gtk.Label(label=self.dialog.name or "Unknown")
         self._name_label.set_xalign(0)
         self._name_label.set_ellipsize(True)
         self._name_label.add_css_class("heading")
-        info_box.append(self._name_label)
+        name_row.append(self._name_label)
+
+        # User status (for private chats only)
+        self._status_label = Gtk.Label()
+        self._status_label.add_css_class("caption")
+        self._status_label.set_visible(False)
+        name_row.append(self._status_label)
+        self._update_status_display()
+
+        info_box.append(name_row)
 
         # Last message preview
         preview_text = self._get_preview_text()
@@ -143,9 +157,72 @@ class ChatRow(Gtk.ListBoxRow):
         else:
             return dt.strftime("%d/%m/%y")
 
+    def _update_status_display(self) -> None:
+        """Update the status display for private chats."""
+        from telethon.tl.types import User
+
+        # Only show status for private chats with users
+        entity = getattr(self.dialog, "entity", None)
+        if not isinstance(entity, User) or not self._client:
+            self._status_label.set_visible(False)
+            return
+
+        # Skip bots - they don't have online status
+        if getattr(entity, "bot", False):
+            self._status_label.set_visible(False)
+            return
+
+        # Get status info
+        status_info = self._client.get_user_status(entity)
+        is_online = status_info.get("is_online", False)
+
+        if is_online:
+            self._status_label.set_label("(online)")
+            self._status_label.remove_css_class("dim-label")
+            self._status_label.add_css_class("success")
+        else:
+            # For offline users, just show a dot indicator
+            self._status_label.set_label("")
+            self._status_label.remove_css_class("success")
+            self._status_label.add_css_class("dim-label")
+
+        self._status_label.set_visible(is_online)
+
+    def update_user_status(self, user: Any) -> None:
+        """Update status display when user status changes.
+
+        Args:
+            user: The user whose status changed.
+        """
+        from telethon.tl.types import User
+
+        entity = getattr(self.dialog, "entity", None)
+        if not isinstance(entity, User):
+            return
+
+        # Check if this is the same user
+        if getattr(entity, "id", None) != getattr(user, "id", None):
+            return
+
+        # Update the entity with new status
+        if hasattr(user, "status"):
+            entity.status = user.status
+
+        self._update_status_display()
+        self._update_accessibility()
+
     def _update_accessibility(self) -> None:
         """Update accessible properties."""
+        from telethon.tl.types import User
+
         parts = [self.dialog.name or "Unknown chat"]
+
+        # Add status for private chats
+        entity = getattr(self.dialog, "entity", None)
+        if isinstance(entity, User) and self._client and not getattr(entity, "bot", False):
+            status_info = self._client.get_user_status(entity)
+            if status_info.get("is_online"):
+                parts.append("online")
 
         if self._muted:
             parts.append("muted")
@@ -181,6 +258,8 @@ class ChatRow(Gtk.ListBoxRow):
         else:
             self._unread_label.set_visible(False)
 
+        # Update status display
+        self._update_status_display()
         self._update_accessibility()
 
 
@@ -1107,6 +1186,7 @@ class MainWindow(Gtk.ApplicationWindow):
         """Set up Telegram event handlers."""
         self._client.on_new_message(self._on_new_message_event)
         self._client.on_message_read(self._on_message_read_event)
+        self._client.on_user_update(self._on_user_update_event)
 
     def _on_escape(self, *args) -> bool:
         """Handle Escape key."""
@@ -1155,7 +1235,7 @@ class MainWindow(Gtk.ApplicationWindow):
         # Add dialog rows
         for dialog in self._dialogs:
             muted = dialog.id in self._muted_chats
-            row = ChatRow(dialog, muted=muted)
+            row = ChatRow(dialog, muted=muted, client=self._client)
             self._chat_listbox.append(row)
             self._dialog_rows[dialog.id] = row
 
@@ -1594,6 +1674,28 @@ class MainWindow(Gtk.ApplicationWindow):
             return False
 
         GLib.idle_add(update_read_status)
+
+    def _on_user_update_event(self, event) -> None:
+        """Handle user status update event."""
+        # Get the user from the event
+        user = getattr(event, "user", None)
+        if not user:
+            return
+
+        user_id = getattr(user, "id", None)
+        if not user_id:
+            return
+
+        def update_status():
+            # Update the chat row for this user
+            for dialog_id, row in self._dialog_rows.items():
+                entity = getattr(row.dialog, "entity", None)
+                if entity and getattr(entity, "id", None) == user_id:
+                    row.update_user_status(user)
+                    break
+            return False  # Don't repeat
+
+        GLib.idle_add(update_status)
 
     # =========================================================================
     # Actions

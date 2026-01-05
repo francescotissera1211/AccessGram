@@ -11,7 +11,17 @@ from pathlib import Path
 from typing import Any
 
 from telethon import TelegramClient, events
-from telethon.tl.types import Dialog, Message, User
+from telethon.tl.types import (
+    Dialog,
+    Message,
+    User,
+    UserStatusEmpty,
+    UserStatusLastMonth,
+    UserStatusLastWeek,
+    UserStatusOffline,
+    UserStatusOnline,
+    UserStatusRecently,
+)
 
 from accessgram.utils.config import Config, get_session_path
 
@@ -41,6 +51,7 @@ class AccessGramClient:
         self._message_edited_callbacks: list[Callable[[events.MessageEdited.Event], Any]] = []
         self._message_deleted_callbacks: list[Callable[[events.MessageDeleted.Event], Any]] = []
         self._message_read_callbacks: list[Callable[[events.MessageRead.Event], Any]] = []
+        self._user_update_callbacks: list[Callable[[events.UserUpdate.Event], Any]] = []
 
         # Register event handlers if we already have a client
         if self._client:
@@ -475,6 +486,8 @@ class AccessGramClient:
                     "bot": getattr(user_obj, "bot", False),
                     "verified": getattr(user_obj, "verified", False),
                     "premium": getattr(user_obj, "premium", False),
+                    "status": self.format_user_status(user_obj),
+                    "is_online": self.get_user_status(user_obj)["is_online"],
                 })
 
             return info
@@ -498,6 +511,87 @@ class AccessGramClient:
         except Exception as e:
             logger.exception("Failed to get entity: %s", e)
             return None
+
+    def get_user_status(self, user: Any) -> dict[str, Any]:
+        """Get user status information.
+
+        Args:
+            user: The user entity.
+
+        Returns:
+            Dictionary with status info:
+                - status: str ("online", "offline", "recently", "last_week",
+                          "last_month", "unknown")
+                - was_online: datetime | None (for offline status)
+                - is_online: bool
+        """
+        if not hasattr(user, "status") or user.status is None:
+            return {"status": "unknown", "was_online": None, "is_online": False}
+
+        status = user.status
+
+        if isinstance(status, UserStatusOnline):
+            return {"status": "online", "was_online": None, "is_online": True}
+        elif isinstance(status, UserStatusOffline):
+            return {
+                "status": "offline",
+                "was_online": status.was_online,
+                "is_online": False,
+            }
+        elif isinstance(status, UserStatusRecently):
+            return {"status": "recently", "was_online": None, "is_online": False}
+        elif isinstance(status, UserStatusLastWeek):
+            return {"status": "last_week", "was_online": None, "is_online": False}
+        elif isinstance(status, UserStatusLastMonth):
+            return {"status": "last_month", "was_online": None, "is_online": False}
+        elif isinstance(status, UserStatusEmpty):
+            return {"status": "unknown", "was_online": None, "is_online": False}
+        else:
+            return {"status": "unknown", "was_online": None, "is_online": False}
+
+    def format_user_status(self, user: Any) -> str:
+        """Format user status as a human-readable string.
+
+        Args:
+            user: The user entity.
+
+        Returns:
+            Formatted status string like "online", "last seen yesterday", etc.
+        """
+        from datetime import datetime
+
+        status_info = self.get_user_status(user)
+        status = status_info["status"]
+
+        if status == "online":
+            return "online"
+        elif status == "offline" and status_info["was_online"]:
+            was_online = status_info["was_online"]
+            now = datetime.now(was_online.tzinfo) if was_online.tzinfo else datetime.now()
+            delta = now - was_online
+
+            if delta.total_seconds() < 60:
+                return "last seen just now"
+            elif delta.total_seconds() < 3600:
+                minutes = int(delta.total_seconds() / 60)
+                return f"last seen {minutes} minute{'s' if minutes != 1 else ''} ago"
+            elif delta.total_seconds() < 86400:
+                hours = int(delta.total_seconds() / 3600)
+                return f"last seen {hours} hour{'s' if hours != 1 else ''} ago"
+            elif delta.days == 1:
+                return f"last seen yesterday at {was_online.strftime('%H:%M')}"
+            elif delta.days < 7:
+                return f"last seen {was_online.strftime('%A at %H:%M')}"
+            else:
+                return f"last seen {was_online.strftime('%d/%m/%y')}"
+        elif status == "recently":
+            return "last seen recently"
+        elif status == "last_week":
+            return "last seen within a week"
+        elif status == "last_month":
+            return "last seen within a month"
+        else:
+            return "last seen a long time ago"
 
     # =========================================================================
     # Event Handling
@@ -548,6 +642,16 @@ class AccessGramClient:
                 except Exception as e:
                     logger.exception("Error in message read callback: %s", e)
 
+        @self._client.on(events.UserUpdate)
+        async def on_user_update(event: events.UserUpdate.Event) -> None:
+            for callback in self._user_update_callbacks:
+                try:
+                    result = callback(event)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    logger.exception("Error in user update callback: %s", e)
+
     def on_new_message(self, callback: Callable[[events.NewMessage.Event], Any]) -> None:
         """Register callback for new messages.
 
@@ -580,6 +684,14 @@ class AccessGramClient:
         """
         self._message_read_callbacks.append(callback)
 
+    def on_user_update(self, callback: Callable[[events.UserUpdate.Event], Any]) -> None:
+        """Register callback for user status updates.
+
+        Args:
+            callback: Function called with UserUpdate event.
+        """
+        self._user_update_callbacks.append(callback)
+
     def remove_callback(self, callback: Callable) -> None:
         """Remove a registered callback.
 
@@ -591,6 +703,7 @@ class AccessGramClient:
             self._message_edited_callbacks,
             self._message_deleted_callbacks,
             self._message_read_callbacks,
+            self._user_update_callbacks,
         ]:
             if callback in callback_list:
                 callback_list.remove(callback)
