@@ -13,7 +13,11 @@ def main() -> int:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Gst", "1.0")
 
-    from gi.repository import Gst
+    from gi.repository import GLib, Gst
+
+    # Set application identifiers for notifications and desktop shells
+    GLib.set_application_name("AccessGram")
+    GLib.set_prgname("accessgram")
 
     # Initialize GStreamer
     Gst.init(None)

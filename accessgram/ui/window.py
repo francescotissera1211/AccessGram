@@ -26,6 +26,7 @@ from accessgram.ui.widgets.voice_player import VoicePlayerWidget
 from accessgram.ui.widgets.voice_recorder import VoiceRecorderWidget
 from accessgram.utils.async_bridge import create_task_with_callback, run_async
 from accessgram.utils.config import Config
+from accessgram.utils.formatting import format_message_preview, truncate_text
 
 logger = logging.getLogger(__name__)
 
@@ -1593,6 +1594,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
         GLib.idle_add(update_dialog_list)
 
+        # Send system notification for incoming messages in unmuted chats
+        if chat_id is not None and not message.out and chat_id not in self._muted_chats:
+            run_async(self._prepare_and_notify_message(message, chat_id))
+
         # Add to message view if current chat
         if is_current_chat:
             # Fetch sender and reply message, then add to view
@@ -1625,6 +1630,100 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Announce after adding (so sender info is available)
         self._announce_new_message(message, chat_id)
+
+    async def _prepare_and_notify_message(self, message: Any, chat_id: int) -> None:
+        """Fetch sender info if needed, then send a system notification."""
+        if not message.sender:
+            try:
+                sender = await message.get_sender()
+                if sender:
+                    message._sender = sender
+            except Exception as e:
+                logger.debug("Could not fetch sender for notification: %s", e)
+
+        sender_name = self._get_message_sender_name(message)
+        chat_name = self._get_chat_notification_title(chat_id, message, sender_name)
+
+        if message.text:
+            preview = truncate_text(message.text, self._config.message_preview_length)
+        else:
+            preview = format_message_preview(message)
+
+        body = preview
+        if sender_name and sender_name != "Unknown" and sender_name != chat_name:
+            body = f"{sender_name}: {preview}"
+
+        notification_id = self._build_notification_id(chat_id, message)
+
+        def notify(title=chat_name, body_text=body, notif_id=notification_id):
+            self._send_system_notification(notif_id, title, body_text)
+            return False
+
+        GLib.idle_add(notify)
+
+    def _build_notification_id(self, chat_id: int, message: Any) -> str:
+        """Build a unique notification ID."""
+        message_id = getattr(message, "id", None)
+        if message_id:
+            return f"message-{chat_id}-{message_id}"
+        return f"message-{chat_id}-{GLib.uuid_string_random()}"
+
+    def _get_chat_notification_title(self, chat_id: int, message: Any, sender_name: str) -> str:
+        """Resolve the best title for a chat notification."""
+        title = ""
+        row = self._dialog_rows.get(chat_id)
+        if row:
+            title = row.dialog.name or ""
+
+        if not title:
+            for dialog in self._dialogs:
+                if dialog.id == chat_id:
+                    title = dialog.name or ""
+                    break
+
+        if not title:
+            chat = getattr(message, "chat", None)
+            if chat:
+                title = getattr(chat, "title", "") or getattr(chat, "username", "")
+
+        if not title and sender_name and sender_name != "Unknown":
+            title = sender_name
+
+        return title or "New message"
+
+    def _send_system_notification(self, notification_id: str, title: str, body: str) -> None:
+        """Send a system notification via the application."""
+        if self._window_is_focused():
+            return
+
+        app = self.get_application()
+        if not isinstance(app, Gio.Application):
+            return
+
+        notification = Gio.Notification.new(title or "New message")
+        if body:
+            notification.set_body(body)
+        notification.set_priority(Gio.NotificationPriority.NORMAL)
+
+        app.send_notification(notification_id, notification)
+
+    def _window_is_focused(self) -> bool:
+        """Check if this window is currently focused/active."""
+        try:
+            is_active_attr = getattr(self, "is_active", None)
+            if isinstance(is_active_attr, bool):
+                return is_active_attr
+            if callable(is_active_attr):
+                return bool(is_active_attr())
+
+            props = getattr(self, "props", None)
+            if props and hasattr(props, "is_active"):
+                return bool(props.is_active)
+
+            return bool(self.get_property("is-active"))
+        except Exception as e:
+            logger.debug("Could not determine window focus: %s", e)
+            return True
 
     def _announce_new_message(self, message: Any, chat_id: int) -> None:
         """Announce a new message to the screen reader."""
