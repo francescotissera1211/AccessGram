@@ -218,7 +218,9 @@ class AuthManager:
         try:
             user = await self._client.sign_in(password=password)
             self.state = AuthState.AUTHORIZED
-            logger.info("Successfully signed in with 2FA as %s", user.first_name if user else "Unknown")
+            logger.info(
+                "Successfully signed in with 2FA as %s", user.first_name if user else "Unknown"
+            )
             return AuthResult(state=AuthState.AUTHORIZED, user=user)
 
         except Exception as e:

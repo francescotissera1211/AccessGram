@@ -103,13 +103,12 @@ class LoginView(Gtk.Box):
         self._phone_entry = Gtk.Entry()
         self._phone_entry.set_placeholder_text("+1234567890")
         self._phone_entry.set_input_purpose(Gtk.InputPurpose.PHONE)
-        self._phone_entry.update_relation(
-            [Gtk.AccessibleRelation.LABELLED_BY],
-            [phone_label],
-        )
         self._phone_entry.update_property(
-            [Gtk.AccessibleProperty.DESCRIPTION],
-            ["Enter your phone number with country code, for example plus 1 2 3 4 5 6 7 8 9 0"],
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+            [
+                "Phone Number",
+                "Enter your phone number with country code, for example plus 1 2 3 4 5 6 7 8 9 0",
+            ],
         )
         self._phone_entry.connect("activate", self._on_phone_activate)
         phone_box.append(self._phone_entry)
@@ -168,13 +167,9 @@ class LoginView(Gtk.Box):
         self._code_entry.set_placeholder_text("12345")
         self._code_entry.set_input_purpose(Gtk.InputPurpose.DIGITS)
         self._code_entry.set_max_length(10)
-        self._code_entry.update_relation(
-            [Gtk.AccessibleRelation.LABELLED_BY],
-            [code_label],
-        )
         self._code_entry.update_property(
-            [Gtk.AccessibleProperty.DESCRIPTION],
-            ["Enter the verification code you received via SMS or Telegram"],
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+            ["Verification Code", "Enter the verification code you received via SMS or Telegram"],
         )
         self._code_entry.connect("activate", self._on_code_activate)
         code_box.append(self._code_entry)
@@ -244,13 +239,9 @@ class LoginView(Gtk.Box):
 
         self._password_entry = Gtk.PasswordEntry()
         self._password_entry.set_show_peek_icon(True)
-        self._password_entry.update_relation(
-            [Gtk.AccessibleRelation.LABELLED_BY],
-            [password_label],
-        )
         self._password_entry.update_property(
-            [Gtk.AccessibleProperty.DESCRIPTION],
-            ["Enter your two-factor authentication password"],
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.DESCRIPTION],
+            ["Password", "Enter your two-factor authentication password"],
         )
         self._password_entry.connect("activate", self._on_password_activate)
         password_box.append(self._password_entry)

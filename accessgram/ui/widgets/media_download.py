@@ -145,7 +145,9 @@ class MediaDownloadWidget(Gtk.Box):
         # Update accessibility
         self.update_property(
             [Gtk.AccessibleProperty.LABEL],
-            [f"{self._media_type.capitalize()}: {self._filename}, {format_file_size(self._file_size) if self._file_size else 'unknown size'}"],
+            [
+                f"{self._media_type.capitalize()}: {self._filename}, {format_file_size(self._file_size) if self._file_size else 'unknown size'}"
+            ],
         )
 
     def _on_action_clicked(self, button: Gtk.Button) -> None:
@@ -179,6 +181,7 @@ class MediaDownloadWidget(Gtk.Box):
 
     def _on_progress(self, current: int, total: int) -> None:
         """Handle download progress."""
+
         def update():
             if total > 0:
                 fraction = current / total

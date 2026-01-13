@@ -107,6 +107,8 @@ class Config:
 
     # Audio settings
     voice_message_volume: float = 1.0
+    sound_effects_enabled: bool = True
+    sound_effects_volume: float = 0.35
 
     # Internal - not saved
     _config_path: Path = field(default_factory=lambda: get_config_dir() / "config.json")
@@ -126,6 +128,8 @@ class Config:
             "announce_sent_messages": self.announce_sent_messages,
             "high_contrast": self.high_contrast,
             "voice_message_volume": self.voice_message_volume,
+            "sound_effects_enabled": self.sound_effects_enabled,
+            "sound_effects_volume": self.sound_effects_volume,
         }
 
         try:
@@ -177,3 +181,7 @@ class Config:
             self.high_contrast = bool(data["high_contrast"])
         if "voice_message_volume" in data:
             self.voice_message_volume = float(data["voice_message_volume"])
+        if "sound_effects_enabled" in data:
+            self.sound_effects_enabled = bool(data["sound_effects_enabled"])
+        if "sound_effects_volume" in data:
+            self.sound_effects_volume = float(data["sound_effects_volume"])

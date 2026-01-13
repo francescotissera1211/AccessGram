@@ -17,6 +17,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, Gtk
 
 from accessgram.accessibility.announcer import ScreenReaderAnnouncer
+from accessgram.audio.sound_effects import SoundEvent, get_sound_effects
 from accessgram.core.client import AccessGramClient
 from accessgram.core.media import MediaManager
 from accessgram.ui.profile_dialog import ProfileDialog
@@ -111,7 +112,9 @@ class ChatRow(Gtk.ListBoxRow):
         right_box.append(self._muted_label)
 
         # Unread count badge (always create, hide if 0)
-        self._unread_label = Gtk.Label(label=str(self.dialog.unread_count) if self.dialog.unread_count else "")
+        self._unread_label = Gtk.Label(
+            label=str(self.dialog.unread_count) if self.dialog.unread_count else ""
+        )
         self._unread_label.add_css_class("badge")
         self._unread_label.add_css_class("accent")
         self._unread_label.set_halign(Gtk.Align.END)
@@ -585,6 +588,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Screen reader announcer
         self._announcer = ScreenReaderAnnouncer(self)
+
+        self._sound_effects = get_sound_effects()
+        self._sound_effects.set_enabled(self._config.sound_effects_enabled)
+        self._sound_effects.set_volume(self._config.sound_effects_volume)
 
         self._build_ui()
         self._setup_shortcuts()
@@ -1226,7 +1233,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 if notify_settings and notify_settings.mute_until:
                     # mute_until could be datetime or timestamp
                     mute_until = notify_settings.mute_until
-                    if hasattr(mute_until, 'timestamp'):
+                    if hasattr(mute_until, "timestamp"):
                         mute_until = mute_until.timestamp()
                     if mute_until > current_time:
                         self._muted_chats.add(dialog.id)
@@ -1366,6 +1373,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._message_entry.grab_focus()
                 self._announcer.announce(f"Opened chat with {chat_name}")
                 return False
+
             GLib.idle_add(focus_and_announce)
 
     # =========================================================================
@@ -1550,6 +1558,8 @@ class MainWindow(Gtk.ApplicationWindow):
             # Move dialog to top of list
             self._move_dialog_to_top(self._current_dialog.id)
 
+        self._sound_effects.play(SoundEvent.MESSAGE_SENT)
+
         if self._config.announce_sent_messages:
             self._announcer.announce("Message sent")
 
@@ -1580,7 +1590,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
                     # Increment unread count if not current chat and not our own message
                     if not is_current_chat and not message.out:
-                        dialog.unread_count = getattr(dialog, 'unread_count', 0) + 1
+                        dialog.unread_count = getattr(dialog, "unread_count", 0) + 1
 
                     # Update the row
                     row = self._dialog_rows.get(dialog.id)
@@ -1600,6 +1610,14 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Add to message view if current chat
         if is_current_chat:
+            if (
+                not message.out
+                and chat_id is not None
+                and chat_id not in self._muted_chats
+                and self._window_is_focused()
+            ):
+                self._sound_effects.play(SoundEvent.MESSAGE_RECEIVED)
+
             # Fetch sender and reply message, then add to view
             run_async(self._prepare_and_add_message(message, chat_id))
             # Mark as read since we're viewing this chat
@@ -1699,6 +1717,8 @@ class MainWindow(Gtk.ApplicationWindow):
         app = self.get_application()
         if not isinstance(app, Gio.Application):
             return
+
+        self._sound_effects.play(SoundEvent.SYSTEM_NOTIFICATION)
 
         notification = Gio.Notification.new(title or "New message")
         if body:
@@ -1838,6 +1858,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     async def _start_conversation(self, entity: Any) -> None:
         """Start a new conversation with an entity."""
+
         # Open the chat view for this entity directly
         # Create a fake dialog-like object for UI purposes
         class PseudoDialog:
@@ -2344,6 +2365,7 @@ class MainWindow(Gtk.ApplicationWindow):
             user: The user entity to display.
             on_message: Optional callback when "Message" is clicked.
         """
+
         def default_on_message(selected_user: Any) -> None:
             """Default handler for messaging from profile dialog."""
             self._on_search_select(selected_user)

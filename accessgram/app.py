@@ -49,6 +49,7 @@ class AccessGramApplication(Gtk.Application):
         self._client: AccessGramClient | None = None
         self._main_window: MainWindow | None = None
         self._login_window: Gtk.Window | None = None
+        self._preferences_window: Gtk.Window | None = None
         self._holding = False
 
     def do_startup(self) -> None:
@@ -129,8 +130,191 @@ class AccessGramApplication(Gtk.Application):
 
     def _on_preferences(self, action: Gio.SimpleAction, param: None) -> None:
         """Show preferences dialog."""
-        # TODO: Implement preferences dialog
-        pass
+        if self._preferences_window:
+            self._preferences_window.present()
+            return
+
+        preferences = Gtk.Window(
+            title="AccessGram - Preferences",
+            default_width=420,
+            default_height=320,
+            transient_for=self._main_window or self._login_window,
+            modal=True,
+        )
+        preferences.set_application(self)
+
+        # Make it accessible
+        preferences.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            ["AccessGram Preferences"],
+        )
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        content.set_margin_top(24)
+        content.set_margin_bottom(24)
+        content.set_margin_start(24)
+        content.set_margin_end(24)
+
+        title = Gtk.Label(label="Preferences")
+        title.add_css_class("title-2")
+        title.set_xalign(0)
+        content.append(title)
+
+        sounds_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        sounds_row.set_hexpand(True)
+
+        sounds_label = Gtk.Label(label="Enable sounds")
+        sounds_label.set_xalign(0)
+        sounds_label.set_hexpand(True)
+        sounds_row.append(sounds_label)
+
+        sounds_switch = Gtk.Switch()
+        sounds_switch.set_active(self._config.sound_effects_enabled)
+        sounds_switch.update_property(
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.HELP_TEXT],
+            ["Enable sounds", "Toggle UI sounds on or off"],
+        )
+        sounds_row.append(sounds_switch)
+        content.append(sounds_row)
+
+        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        content.append(separator)
+
+        api_title = Gtk.Label(label="Telegram API")
+        api_title.add_css_class("heading")
+        api_title.set_xalign(0)
+        content.append(api_title)
+
+        api_help = Gtk.Label(
+            label=(
+                "API credentials are required to connect. "
+                "Changes take effect after restarting AccessGram."
+            ),
+            wrap=True,
+            xalign=0,
+        )
+        api_help.add_css_class("dim-label")
+        api_help.add_css_class("caption")
+        content.append(api_help)
+
+        api_id_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        api_id_row.set_hexpand(True)
+
+        api_id_label = Gtk.Label(label="API ID")
+        api_id_label.set_xalign(0)
+        api_id_label.set_size_request(120, -1)
+        api_id_row.append(api_id_label)
+
+        api_id_entry = Gtk.Entry()
+        api_id_entry.set_placeholder_text("Enter your API ID (numbers only)")
+        api_id_entry.set_text(str(self._config.api_id) if self._config.api_id else "")
+        api_id_entry.set_hexpand(True)
+        api_id_entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        api_id_entry.update_property(
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.HELP_TEXT],
+            ["API ID", "Telegram API ID from my.telegram.org"],
+        )
+        api_id_row.append(api_id_entry)
+        content.append(api_id_row)
+
+        api_hash_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        api_hash_row.set_hexpand(True)
+
+        api_hash_label = Gtk.Label(label="API hash / secret")
+        api_hash_label.set_xalign(0)
+        api_hash_label.set_size_request(120, -1)
+        api_hash_row.append(api_hash_label)
+
+        api_hash_entry = Gtk.PasswordEntry()
+        api_hash_entry.set_show_peek_icon(True)
+        api_hash_entry.set_property("placeholder-text", "Enter your API hash")
+        api_hash_entry.set_text(self._config.api_hash)
+        api_hash_entry.set_hexpand(True)
+        api_hash_entry.update_property(
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.HELP_TEXT],
+            ["API hash / secret", "Telegram API hash from my.telegram.org"],
+        )
+        api_hash_row.append(api_hash_entry)
+        content.append(api_hash_row)
+
+        error_label = Gtk.Label()
+        error_label.add_css_class("error")
+        error_label.set_visible(False)
+        error_label.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            ["Preferences error message"],
+        )
+        content.append(error_label)
+
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        buttons.set_halign(Gtk.Align.END)
+
+        save_button = Gtk.Button(label="Save")
+        save_button.add_css_class("suggested-action")
+        save_button.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            ["Save preferences"],
+        )
+        buttons.append(save_button)
+
+        close_button = Gtk.Button(label="Close")
+        close_button.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            ["Close preferences"],
+        )
+        close_button.connect("clicked", lambda *_: preferences.close())
+        buttons.append(close_button)
+        content.append(buttons)
+
+        def on_save_clicked(_button: Gtk.Button) -> None:
+            error_label.set_visible(False)
+
+            api_id_text = api_id_entry.get_text().strip()
+            api_hash_text = api_hash_entry.get_text().strip()
+
+            if not api_id_text or not api_hash_text:
+                error_label.set_label("Please enter both API ID and API hash")
+                error_label.set_visible(True)
+                return
+
+            try:
+                api_id = int(api_id_text)
+            except ValueError:
+                error_label.set_label("API ID must be a number")
+                error_label.set_visible(True)
+                return
+
+            if api_id <= 0:
+                error_label.set_label("API ID must be greater than zero")
+                error_label.set_visible(True)
+                return
+
+            self._config.api_id = api_id
+            self._config.api_hash = api_hash_text
+            self._config.save()
+
+        save_button.connect("clicked", on_save_clicked)
+
+        def on_sounds_toggled(switch: Gtk.Switch, _param: object) -> None:
+            enabled = bool(switch.get_active())
+            self._config.sound_effects_enabled = enabled
+            self._config.save()
+
+            from accessgram.audio.sound_effects import get_sound_effects
+
+            get_sound_effects().set_enabled(enabled)
+
+        sounds_switch.connect("notify::active", on_sounds_toggled)
+
+        def on_close_request(*_args: object) -> bool:
+            self._preferences_window = None
+            return False
+
+        preferences.connect("close-request", on_close_request)
+
+        preferences.set_child(content)
+        self._preferences_window = preferences
+        preferences.present()
 
     def _show_credentials_dialog(self) -> None:
         """Show dialog to enter API credentials."""
@@ -181,9 +365,10 @@ class AccessGramApplication(Gtk.Application):
         api_id_entry = Gtk.Entry()
         api_id_entry.set_placeholder_text("Enter your API ID (numbers only)")
         api_id_entry.set_hexpand(True)
-        api_id_entry.update_relation(
-            [Gtk.AccessibleRelation.LABELLED_BY],
-            [api_id_label],
+        api_id_entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        api_id_entry.update_property(
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.HELP_TEXT],
+            ["API ID", "Telegram API ID from my.telegram.org"],
         )
         api_id_box.append(api_id_label)
         api_id_box.append(api_id_entry)
@@ -194,12 +379,13 @@ class AccessGramApplication(Gtk.Application):
         api_hash_label = Gtk.Label(label="API Hash:")
         api_hash_label.set_xalign(0)
         api_hash_label.set_size_request(100, -1)
-        api_hash_entry = Gtk.Entry()
-        api_hash_entry.set_placeholder_text("Enter your API Hash")
+        api_hash_entry = Gtk.PasswordEntry()
+        api_hash_entry.set_show_peek_icon(True)
+        api_hash_entry.set_property("placeholder-text", "Enter your API hash")
         api_hash_entry.set_hexpand(True)
-        api_hash_entry.update_relation(
-            [Gtk.AccessibleRelation.LABELLED_BY],
-            [api_hash_label],
+        api_hash_entry.update_property(
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.HELP_TEXT],
+            ["API hash / secret", "Telegram API hash from my.telegram.org"],
         )
         api_hash_box.append(api_hash_label)
         api_hash_box.append(api_hash_entry)
@@ -219,7 +405,7 @@ class AccessGramApplication(Gtk.Application):
             ["Save credentials and continue to login"],
         )
 
-        def on_save_clicked(button: Gtk.Button) -> None:
+        def on_save_clicked(_button: Gtk.Button) -> None:
             api_id_text = api_id_entry.get_text().strip()
             api_hash_text = api_hash_entry.get_text().strip()
 

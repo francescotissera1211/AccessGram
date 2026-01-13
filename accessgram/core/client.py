@@ -367,13 +367,15 @@ class AccessGramClient:
             # mute_until = 2147483647 means mute forever, 0 means unmute
             mute_until = 2147483647 if mute else 0
 
-            await self._client(UpdateNotifySettingsRequest(
-                peer=InputNotifyPeer(peer=input_peer),
-                settings=InputPeerNotifySettings(
-                    mute_until=mute_until,
-                    silent=mute,
-                ),
-            ))
+            await self._client(
+                UpdateNotifySettingsRequest(
+                    peer=InputNotifyPeer(peer=input_peer),
+                    settings=InputPeerNotifySettings(
+                        mute_until=mute_until,
+                        silent=mute,
+                    ),
+                )
+            )
             return True
         except Exception as e:
             logger.exception("Failed to update mute settings: %s", e)
@@ -396,11 +398,14 @@ class AccessGramClient:
 
         try:
             input_peer = await self._client.get_input_entity(chat)
-            settings = await self._client(GetNotifySettingsRequest(
-                peer=InputNotifyPeer(peer=input_peer),
-            ))
+            settings = await self._client(
+                GetNotifySettingsRequest(
+                    peer=InputNotifyPeer(peer=input_peer),
+                )
+            )
             # Check if mute_until is set to a future time
             import time
+
             return settings.mute_until is not None and settings.mute_until > int(time.time())
         except Exception as e:
             logger.exception("Failed to get mute settings: %s", e)
@@ -478,17 +483,19 @@ class AccessGramClient:
             }
 
             if user_obj:
-                info.update({
-                    "first_name": getattr(user_obj, "first_name", "") or "",
-                    "last_name": getattr(user_obj, "last_name", "") or "",
-                    "username": getattr(user_obj, "username", "") or "",
-                    "phone": getattr(user_obj, "phone", "") or "",
-                    "bot": getattr(user_obj, "bot", False),
-                    "verified": getattr(user_obj, "verified", False),
-                    "premium": getattr(user_obj, "premium", False),
-                    "status": self.format_user_status(user_obj),
-                    "is_online": self.get_user_status(user_obj)["is_online"],
-                })
+                info.update(
+                    {
+                        "first_name": getattr(user_obj, "first_name", "") or "",
+                        "last_name": getattr(user_obj, "last_name", "") or "",
+                        "username": getattr(user_obj, "username", "") or "",
+                        "phone": getattr(user_obj, "phone", "") or "",
+                        "bot": getattr(user_obj, "bot", False),
+                        "verified": getattr(user_obj, "verified", False),
+                        "premium": getattr(user_obj, "premium", False),
+                        "status": self.format_user_status(user_obj),
+                        "is_online": self.get_user_status(user_obj)["is_online"],
+                    }
+                )
 
             return info
         except Exception as e:

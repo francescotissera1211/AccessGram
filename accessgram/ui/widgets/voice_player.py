@@ -199,6 +199,7 @@ class VoicePlayerWidget(Gtk.Box):
 
     def _on_position_changed(self, position: float, duration: float) -> None:
         """Handle position updates."""
+
         def update():
             if duration > 0:
                 self._progress.set_fraction(position / duration)
@@ -209,6 +210,7 @@ class VoicePlayerWidget(Gtk.Box):
 
     def _on_finished(self) -> None:
         """Handle playback finished."""
+
         def reset():
             self._is_current = False
             self._update_button_state(PlayerState.STOPPED)
