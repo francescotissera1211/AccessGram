@@ -970,6 +970,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._chat_view.append(compose_box)
         self._right_box.append(self._chat_view)
+        self._setup_attach_button_tab_behavior()
 
         paned.set_end_child(self._right_box)
         self.set_child(paned)
@@ -1159,6 +1160,51 @@ class MainWindow(Gtk.ApplicationWindow):
 
         controller.connect("key-pressed", on_key_pressed)
         self._messages_listbox.add_controller(controller)
+
+    def _setup_attach_button_tab_behavior(self) -> None:
+        """Set up Shift+Tab on attach button to focus the messages listbox.
+
+        Without this, GTK's default backward navigation lands on a selectable
+        label inside a MessageRow instead of the ListBox row itself, which
+        breaks arrow-key navigation.
+
+        If a row with inline buttons is selected (i.e. Tab traversed through
+        those buttons to reach the attach button), Shift+Tab returns to the
+        last inline button, mirroring the forward Tab path.
+        """
+        from gi.repository import Gdk
+
+        controller = Gtk.EventControllerKey()
+
+        def on_key_pressed(ctrl, keyval, keycode, state):
+            if keyval == Gdk.KEY_ISO_Left_Tab:
+                selected_row = self._messages_listbox.get_selected_row()
+
+                if selected_row and isinstance(selected_row, MessageRow):
+                    # If the selected row has inline buttons, focus the last
+                    # button (reverse of Tab which went last-button → attach)
+                    buttons_widget = selected_row._inline_buttons_widget
+                    if buttons_widget and buttons_widget._buttons:
+                        buttons_widget._buttons[-1].grab_focus()
+                        return True
+                    # Otherwise return to the previously selected row
+                    selected_row.grab_focus()
+                    return True
+
+                # No row selected — select and focus the last row
+                last_row = self._messages_listbox.get_last_child()
+                if last_row and isinstance(last_row, Gtk.ListBoxRow):
+                    self._messages_listbox.select_row(last_row)
+                    last_row.grab_focus()
+                    return True
+
+                # No messages at all — fall back to chat list
+                self._chat_listbox.grab_focus()
+                return True
+            return False
+
+        controller.connect("key-pressed", on_key_pressed)
+        self._attach_button.add_controller(controller)
 
     def _setup_chat_context_menu(self) -> None:
         """Set up context menu for chat list items."""
