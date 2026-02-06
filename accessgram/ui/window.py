@@ -22,6 +22,7 @@ from accessgram.core.client import AccessGramClient
 from accessgram.core.media import MediaManager
 from accessgram.ui.profile_dialog import ProfileDialog
 from accessgram.ui.search_dialog import SearchDialog
+from accessgram.ui.widgets.inline_buttons import InlineButtonWidget
 from accessgram.ui.widgets.media_download import MediaDownloadWidget
 from accessgram.ui.widgets.voice_player import VoicePlayerWidget
 from accessgram.ui.widgets.voice_recorder import VoiceRecorderWidget
@@ -270,16 +271,24 @@ class ChatRow(Gtk.ListBoxRow):
 class MessageRow(Gtk.ListBoxRow):
     """A row displaying a single message."""
 
-    def __init__(self, message: Any, media_manager: Any = None) -> None:
+    def __init__(
+        self,
+        message: Any,
+        media_manager: Any = None,
+        client: Any = None,
+    ) -> None:
         """Initialize a message row.
 
         Args:
             message: The Telethon Message object.
             media_manager: Optional MediaManager for downloading media.
+            client: Optional AccessGramClient for inline button interactions.
         """
         super().__init__()
         self.message = message
         self._media_manager = media_manager
+        self._client = client
+        self._inline_buttons_widget: InlineButtonWidget | None = None
         self._build_ui()
         self._update_accessibility()
 
@@ -289,6 +298,7 @@ class MessageRow(Gtk.ListBoxRow):
         box.set_margin_start(12)
         box.set_margin_end(12)
         box.set_margin_top(6)
+        box.set_focusable(False)  # Let focus pass through to children
         box.set_margin_bottom(6)
 
         # Reply context (if this is a reply)
@@ -327,6 +337,13 @@ class MessageRow(Gtk.ListBoxRow):
         # Message content
         content = self._build_content()
         box.append(content)
+
+        # Inline buttons (for bot messages)
+        buttons_widget = self._build_inline_buttons()
+        if buttons_widget:
+            box.append(buttons_widget)
+            # Add keyboard controller for button navigation
+            self._setup_button_navigation()
 
         self.set_child(box)
 
@@ -470,6 +487,95 @@ class MessageRow(Gtk.ListBoxRow):
         """Build a widget for voice messages."""
         return VoicePlayerWidget(self.message, self._media_manager)
 
+    def _build_inline_buttons(self) -> Gtk.Widget | None:
+        """Build inline buttons widget if message has buttons.
+
+        Returns:
+            InlineButtonWidget if message has buttons, None otherwise.
+        """
+        # Check if message has inline buttons
+        # message.buttons returns the inline keyboard buttons if present
+        if not hasattr(self.message, "buttons") or not self.message.buttons:
+            return None
+
+        # Create the inline buttons widget
+        self._inline_buttons_widget = InlineButtonWidget(
+            message=self.message,
+            client=self._client,
+            on_callback_result=self._on_button_callback_result,
+        )
+        return self._inline_buttons_widget
+
+    def _on_button_callback_result(self, message: str) -> None:
+        """Handle callback result from inline button.
+
+        Args:
+            message: The callback result message to display.
+        """
+        # The InlineButtonWidget handles announcements internally
+        # This callback can be used for additional UI updates if needed
+        pass
+
+    def _setup_button_navigation(self) -> None:
+        """Set up keyboard navigation for inline buttons."""
+        from gi.repository import Gdk
+
+        key_controller = Gtk.EventControllerKey()
+        key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        key_controller.connect("key-pressed", self._on_button_key_pressed)
+        self.add_controller(key_controller)
+
+    def _on_button_key_pressed(
+        self,
+        controller: Gtk.EventControllerKey,
+        keyval: int,
+        keycode: int,
+        state: int,
+    ) -> bool:
+        """Handle key presses for button navigation.
+
+        Handles arrow key navigation between inline buttons.
+
+        Args:
+            controller: The key controller.
+            keyval: The key value.
+            keycode: The key code.
+            state: Modifier state.
+
+        Returns:
+            True if the key was handled, False otherwise.
+        """
+        from gi.repository import Gdk
+
+        if not self._inline_buttons_widget:
+            return False
+
+        buttons = self._inline_buttons_widget._buttons
+        if not buttons:
+            return False
+
+        # Get current focus
+        focus_widget = self.get_root().get_focus() if self.get_root() else None
+
+        # Handle arrow key navigation between buttons when a button is focused
+        if focus_widget in buttons:
+            current_idx = buttons.index(focus_widget)
+
+            if keyval == Gdk.KEY_Right:
+                # Move to next button
+                next_idx = current_idx + 1
+                if next_idx < len(buttons):
+                    buttons[next_idx].grab_focus()
+                    return True
+            elif keyval == Gdk.KEY_Left:
+                # Move to previous button
+                prev_idx = current_idx - 1
+                if prev_idx >= 0:
+                    buttons[prev_idx].grab_focus()
+                    return True
+
+        return False
+
     def _update_accessibility(self) -> None:
         """Update accessible properties."""
         sender = self._get_sender_name()
@@ -511,7 +617,16 @@ class MessageRow(Gtk.ListBoxRow):
             is_read = getattr(self, "_is_read", False)
             status_suffix = ", seen" if is_read else ", sent"
 
-        accessible_label = f"{sender}, {time_str}: {reply_prefix}{content}{status_suffix}"
+        # Add inline buttons info
+        buttons_suffix = ""
+        if hasattr(self.message, "buttons") and self.message.buttons:
+            button_count = sum(len(row) for row in self.message.buttons if row)
+            if button_count == 1:
+                buttons_suffix = ", has 1 button"
+            elif button_count > 1:
+                buttons_suffix = f", has {button_count} buttons"
+
+        accessible_label = f"{sender}, {time_str}: {reply_prefix}{content}{status_suffix}{buttons_suffix}"
         self.update_property(
             [Gtk.AccessibleProperty.LABEL],
             [accessible_label],
@@ -720,7 +835,7 @@ class MainWindow(Gtk.ApplicationWindow):
             ["Messages - press Enter to reply"],
         )
         self._messages_listbox.connect("row-activated", self._on_message_activated)
-        self._setup_list_tab_behavior(self._messages_listbox, self._get_messages_list_tab_targets)
+        self._setup_messages_list_tab_behavior()
         self._setup_message_context_menu()
         msg_scrolled.set_child(self._messages_listbox)
         self._chat_view.append(msg_scrolled)
@@ -979,6 +1094,72 @@ class MainWindow(Gtk.ApplicationWindow):
 
         return next_widget, prev_widget
 
+    def _setup_messages_list_tab_behavior(self) -> None:
+        """Set up Tab key behavior for the messages listbox.
+
+        Handles Tab navigation with special support for inline buttons.
+        When a message has inline buttons, Tab focuses those buttons
+        before moving to the next widget.
+        """
+        controller = Gtk.EventControllerKey()
+
+        def on_key_pressed(ctrl, keyval, keycode, state):
+            from gi.repository import Gdk
+
+            selected_row = self._messages_listbox.get_selected_row()
+
+            # Check if selected row has inline buttons
+            if selected_row and isinstance(selected_row, MessageRow):
+                buttons_widget = selected_row._inline_buttons_widget
+                if buttons_widget and buttons_widget._buttons:
+                    buttons = buttons_widget._buttons
+
+                    # Get current focus
+                    focus_widget = self.get_focus()
+
+                    # Regular Tab
+                    if keyval == Gdk.KEY_Tab:
+                        # If focus is not on a button, focus the first button
+                        if focus_widget not in buttons:
+                            buttons[0].grab_focus()
+                            return True
+                        # If on a button but not the last, go to next button
+                        current_idx = buttons.index(focus_widget)
+                        if current_idx < len(buttons) - 1:
+                            buttons[current_idx + 1].grab_focus()
+                            return True
+                        # On last button, go to attach button
+                        self._attach_button.grab_focus()
+                        return True
+
+                    # Shift+Tab
+                    elif keyval == Gdk.KEY_ISO_Left_Tab:
+                        # If focus is on a button but not the first, go to previous button
+                        if focus_widget in buttons:
+                            current_idx = buttons.index(focus_widget)
+                            if current_idx > 0:
+                                buttons[current_idx - 1].grab_focus()
+                                return True
+                            # On first button, go back to listbox (select the row)
+                            self._messages_listbox.grab_focus()
+                            return True
+                        # If not on a button, do normal Shift+Tab
+                        self._chat_listbox.grab_focus()
+                        return True
+
+            # Default Tab behavior for rows without buttons
+            if keyval == Gdk.KEY_ISO_Left_Tab:
+                self._chat_listbox.grab_focus()
+                return True
+            elif keyval == Gdk.KEY_Tab:
+                self._attach_button.grab_focus()
+                return True
+
+            return False
+
+        controller.connect("key-pressed", on_key_pressed)
+        self._messages_listbox.add_controller(controller)
+
     def _setup_chat_context_menu(self) -> None:
         """Set up context menu for chat list items."""
         from gi.repository import Gdk
@@ -1193,6 +1374,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _setup_event_handlers(self) -> None:
         """Set up Telegram event handlers."""
         self._client.on_new_message(self._on_new_message_event)
+        self._client.on_message_edited(self._on_message_edited_event)
         self._client.on_message_read(self._on_message_read_event)
         self._client.on_user_update(self._on_user_update_event)
 
@@ -1342,7 +1524,7 @@ class MainWindow(Gtk.ApplicationWindow):
             # Add in chronological order (oldest first)
             for message in reversed(messages):
                 if message.text or message.media:
-                    row = MessageRow(message, self._media_manager)
+                    row = MessageRow(message, self._media_manager, self._client)
                     self._messages_listbox.append(row)
                     # Track outgoing message rows for read status updates
                     if message.out and message.id:
@@ -1350,6 +1532,9 @@ class MainWindow(Gtk.ApplicationWindow):
                         # Mark as read if already seen by recipient
                         if message.id <= read_outbox_max_id:
                             row.mark_as_read()
+                    # Also track messages with inline buttons for updates
+                    elif message.id and hasattr(message, "buttons") and message.buttons:
+                        self._message_rows[message.id] = row
 
             # Mark messages as read
             try:
@@ -1513,7 +1698,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._messages_listbox.remove(old_row)
 
             # Create new row with edited message
-            new_row = MessageRow(edited_message, self._media_manager)
+            new_row = MessageRow(edited_message, self._media_manager, self._client)
             self._messages_listbox.insert(new_row, index)
             self._message_rows[edited_message.id] = new_row
 
@@ -1545,7 +1730,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._clear_reply()
 
         # Add message to list
-        row = MessageRow(message, self._media_manager)
+        row = MessageRow(message, self._media_manager, self._client)
         self._messages_listbox.append(row)
 
         # Update the dialog in the chat list
@@ -1767,12 +1952,53 @@ class MainWindow(Gtk.ApplicationWindow):
     def _add_message_row(self, message: Any) -> bool:
         """Add a message row (called from main thread)."""
         if message.text or message.media:
-            row = MessageRow(message, self._media_manager)
+            row = MessageRow(message, self._media_manager, self._client)
             self._messages_listbox.append(row)
             # Track outgoing message rows for read status updates
             if message.out and message.id:
                 self._message_rows[message.id] = row
+            # Also track messages with inline buttons for updates
+            if message.id and hasattr(message, "buttons") and message.buttons:
+                self._message_rows[message.id] = row
         return False  # Don't repeat
+
+    def _on_message_edited_event(self, event) -> None:
+        """Handle message edited event from Telegram.
+
+        This is triggered when messages are edited externally,
+        such as when bots update inline buttons.
+        """
+        message = event.message
+        if not message or not message.id:
+            return
+
+        # Get the chat ID from the event
+        chat_id = getattr(event, "chat_id", None) or getattr(message, "chat_id", None)
+        if not chat_id:
+            return
+
+        # Only process if this is for the current chat
+        if not self._current_dialog or self._current_dialog.id != chat_id:
+            return
+
+        def update_message_row():
+            # Check if we have this message row tracked
+            if message.id in self._message_rows:
+                old_row = self._message_rows[message.id]
+                index = old_row.get_index()
+
+                # Remove old row
+                self._messages_listbox.remove(old_row)
+
+                # Create new row with updated message
+                new_row = MessageRow(message, self._media_manager, self._client)
+                self._messages_listbox.insert(new_row, index)
+                self._message_rows[message.id] = new_row
+
+                logger.debug("Updated message row %d with edited content", message.id)
+            return False
+
+        GLib.idle_add(update_message_row)
 
     def _on_message_read_event(self, event) -> None:
         """Handle message read event."""
@@ -1902,7 +2128,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         for message in reversed(messages):
             if message.text or message.media:
-                row = MessageRow(message, self._media_manager)
+                row = MessageRow(message, self._media_manager, self._client)
                 self._messages_listbox.append(row)
 
         # Focus message entry
@@ -1980,7 +2206,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_file_sent(self, message: Any) -> None:
         """Handle successful file send."""
         # Add message to list
-        row = MessageRow(message, self._media_manager)
+        row = MessageRow(message, self._media_manager, self._client)
         self._messages_listbox.append(row)
 
         # Update the dialog in the chat list
@@ -2025,7 +2251,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_voice_sent(self, message: Any) -> None:
         """Handle successful voice message send."""
         # Add message to list
-        row = MessageRow(message, self._media_manager)
+        row = MessageRow(message, self._media_manager, self._client)
         self._messages_listbox.append(row)
 
         # Update the dialog in the chat list

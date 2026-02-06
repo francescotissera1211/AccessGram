@@ -317,15 +317,21 @@ class SearchDialog(Gtk.Window):
 
     def _setup_actions(self) -> None:
         """Set up window-level actions."""
+        # Create an action group for this dialog
+        self._action_group = Gio.SimpleActionGroup()
+
         # Message action (same as activating)
         message_action = Gio.SimpleAction.new("message-entity", None)
         message_action.connect("activate", self._on_message_action)
-        self.add_action(message_action)
+        self._action_group.add_action(message_action)
 
         # View profile action
         view_profile_action = Gio.SimpleAction.new("view-profile", None)
         view_profile_action.connect("activate", self._on_view_profile_action)
-        self.add_action(view_profile_action)
+        self._action_group.add_action(view_profile_action)
+
+        # Insert the action group into this widget
+        self.insert_action_group("search", self._action_group)
 
     def _setup_context_menu(self) -> None:
         """Set up context menu for search results."""
@@ -349,11 +355,11 @@ class SearchDialog(Gtk.Window):
     def _build_context_menu_model(self, entity: Any) -> Gio.Menu:
         """Build context menu model for an entity."""
         menu = Gio.Menu()
-        menu.append("Message", "win.message-entity")
+        menu.append("Message", "search.message-entity")
 
         # Only show "View profile" for users (not channels/groups)
         if hasattr(entity, "first_name"):
-            menu.append("View profile", "win.view-profile")
+            menu.append("View profile", "search.view-profile")
 
         return menu
 
