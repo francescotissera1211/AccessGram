@@ -332,6 +332,19 @@ class AccessGramClient:
             raise RuntimeError("Client not connected")
         await self._client.delete_dialog(chat, revoke=revoke)
 
+    async def join_group_or_channel(self, entity: Any) -> None:
+        """Join a public group or channel.
+
+        Args:
+            entity: The target group/channel entity.
+        """
+        if not self._client:
+            raise RuntimeError("Client not connected")
+
+        from telethon.tl.functions.channels import JoinChannelRequest
+
+        await self._client(JoinChannelRequest(channel=entity))
+
     async def mark_read(self, chat: Any, message: Message | None = None) -> bool:
         """Mark messages as read.
 

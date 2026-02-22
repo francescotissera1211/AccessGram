@@ -320,6 +320,11 @@ class SearchDialog(Gtk.Window):
         # Create an action group for this dialog
         self._action_group = Gio.SimpleActionGroup()
 
+        # Join action for groups/channels
+        join_action = Gio.SimpleAction.new("join-entity", None)
+        join_action.connect("activate", self._on_join_action)
+        self._action_group.add_action(join_action)
+
         # Message action (same as activating)
         message_action = Gio.SimpleAction.new("message-entity", None)
         message_action.connect("activate", self._on_message_action)
@@ -355,10 +360,14 @@ class SearchDialog(Gtk.Window):
     def _build_context_menu_model(self, entity: Any) -> Gio.Menu:
         """Build context menu model for an entity."""
         menu = Gio.Menu()
+
+        if self._can_join_entity(entity):
+            menu.append(self._get_join_action_label(entity), "search.join-entity")
+
         menu.append("Message", "search.message-entity")
 
         # Only show "View profile" for users (not channels/groups)
-        if hasattr(entity, "first_name"):
+        if self._is_user_entity(entity):
             menu.append("View profile", "search.view-profile")
 
         return menu
@@ -401,6 +410,77 @@ class SearchDialog(Gtk.Window):
                 self._show_context_menu(row)
                 return True
         return False
+
+    def _is_user_entity(self, entity: Any) -> bool:
+        """Check whether an entity is a user."""
+        return hasattr(entity, "first_name")
+
+    def _is_group_or_channel_entity(self, entity: Any) -> bool:
+        """Check whether an entity is a group or channel."""
+        return hasattr(entity, "megagroup") or hasattr(entity, "broadcast")
+
+    def _can_join_entity(self, entity: Any) -> bool:
+        """Check whether a group/channel entity can be joined."""
+        if not self._is_group_or_channel_entity(entity):
+            return False
+        if getattr(entity, "kicked", False):
+            return False
+        return bool(getattr(entity, "left", False))
+
+    def _get_join_action_label(self, entity: Any) -> str:
+        """Get context menu label for the join action."""
+        if getattr(entity, "megagroup", False):
+            return "Join group"
+        if getattr(entity, "broadcast", False):
+            return "Join channel"
+        return "Join"
+
+    def _get_entity_name(self, entity: Any) -> str:
+        """Get display name for the entity."""
+        if hasattr(entity, "first_name"):
+            name = entity.first_name or ""
+            if entity.last_name:
+                name += " " + entity.last_name
+            return name or "Unknown User"
+        if hasattr(entity, "title"):
+            return entity.title or "Unknown"
+        return "Unknown"
+
+    def _on_join_action(self, action: Gio.SimpleAction, param: None) -> None:
+        """Handle join action from context menu."""
+        entity = self._context_menu_entity
+        if not entity or not self._can_join_entity(entity):
+            return
+
+        entity_name = self._get_entity_name(entity)
+        self._status_label.set_label(f"Joining {entity_name}...")
+        self._spinner.set_visible(True)
+        self._spinner.start()
+
+        create_task_with_callback(
+            self._client.join_group_or_channel(entity),
+            lambda _: self._on_join_success(entity),
+            self._on_join_error,
+        )
+
+    def _on_join_success(self, entity: Any) -> None:
+        """Handle successful join action."""
+        self._spinner.stop()
+        self._spinner.set_visible(False)
+
+        if hasattr(entity, "left"):
+            entity.left = False
+
+        self._status_label.set_label(f"Joined {self._get_entity_name(entity)}")
+        self._on_select(entity)
+        self.close()
+
+    def _on_join_error(self, error: Exception) -> None:
+        """Handle join action error."""
+        self._spinner.stop()
+        self._spinner.set_visible(False)
+        self._status_label.set_label(f"Failed to join: {error}")
+        logger.exception("Failed to join group/channel: %s", error)
 
     def _on_message_action(self, action: Gio.SimpleAction, param: None) -> None:
         """Handle message action from context menu."""
