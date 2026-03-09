@@ -153,6 +153,33 @@ class ProfileDialog(Gtk.Window):
         self._loading_label.set_label(f"Failed to load profile: {error}")
         logger.exception("Failed to load profile: %s", error)
 
+    def _make_focusable_label(
+        self,
+        text: str,
+        *,
+        selectable: bool = False,
+        wrap: bool = False,
+        css_classes: list[str] | None = None,
+        accessible_label: str | None = None,
+    ) -> Gtk.Label:
+        """Create a label that can participate in keyboard focus order."""
+        label = Gtk.Label(label=text)
+        label.set_xalign(0)
+        label.set_focusable(True)
+        label.set_can_focus(True)
+        label.set_selectable(selectable)
+        if wrap:
+            label.set_wrap(True)
+        if css_classes:
+            for css_class in css_classes:
+                label.add_css_class(css_class)
+        if accessible_label:
+            label.update_property(
+                [Gtk.AccessibleProperty.LABEL],
+                [accessible_label],
+            )
+        return label
+
     def _display_profile(self, info: dict[str, Any]) -> None:
         """Display the profile information."""
         # Name
@@ -160,28 +187,35 @@ class ProfileDialog(Gtk.Window):
         last_name = info.get("last_name", "")
         full_name = f"{first_name} {last_name}".strip() or "Unknown"
 
-        name_label = Gtk.Label(label=full_name)
-        name_label.set_xalign(0)
-        name_label.add_css_class("title-1")
+        name_label = self._make_focusable_label(
+            full_name,
+            selectable=True,
+            css_classes=["title-1"],
+            accessible_label=f"Name: {full_name}",
+        )
         self._content_box.append(name_label)
 
         # Username
         username = info.get("username", "")
         if username:
-            username_label = Gtk.Label(label=f"@{username}")
-            username_label.set_xalign(0)
-            username_label.add_css_class("dim-label")
+            username_label = self._make_focusable_label(
+                f"@{username}",
+                selectable=True,
+                css_classes=["dim-label"],
+                accessible_label=f"Username: at {username}",
+            )
             self._content_box.append(username_label)
 
         # Status (online/last seen)
         status = info.get("status", "")
         if status:
-            self._status_label = Gtk.Label(label=status)
-            self._status_label.set_xalign(0)
-            if info.get("is_online"):
-                self._status_label.add_css_class("success")
-            else:
-                self._status_label.add_css_class("dim-label")
+            status_css = ["success"] if info.get("is_online") else ["dim-label"]
+            self._status_label = self._make_focusable_label(
+                status,
+                selectable=True,
+                css_classes=status_css,
+                accessible_label=f"Status: {status}",
+            )
             self._content_box.append(self._status_label)
 
         # Badges (verified, premium, bot)
@@ -194,9 +228,13 @@ class ProfileDialog(Gtk.Window):
             badges.append("Bot")
 
         if badges:
-            badges_label = Gtk.Label(label=" | ".join(badges))
-            badges_label.set_xalign(0)
-            badges_label.add_css_class("caption")
+            badges_text = " | ".join(badges)
+            badges_label = self._make_focusable_label(
+                badges_text,
+                selectable=True,
+                css_classes=["caption"],
+                accessible_label=f"Badges: {', '.join(badges)}",
+            )
             self._content_box.append(badges_label)
 
         # Separator
@@ -213,15 +251,19 @@ class ProfileDialog(Gtk.Window):
             bio_header.add_css_class("heading")
             self._content_box.append(bio_header)
 
-            bio_label = Gtk.Label(label=about)
-            bio_label.set_xalign(0)
-            bio_label.set_wrap(True)
-            bio_label.set_selectable(True)
+            bio_label = self._make_focusable_label(
+                about,
+                selectable=True,
+                wrap=True,
+                accessible_label=f"Bio: {about}",
+            )
             self._content_box.append(bio_label)
         else:
-            no_bio_label = Gtk.Label(label="No bio")
-            no_bio_label.set_xalign(0)
-            no_bio_label.add_css_class("dim-label")
+            no_bio_label = self._make_focusable_label(
+                "No bio",
+                css_classes=["dim-label"],
+                accessible_label="Bio: no bio",
+            )
             self._content_box.append(no_bio_label)
 
         # Phone number
@@ -237,9 +279,11 @@ class ProfileDialog(Gtk.Window):
             phone_header.add_css_class("heading")
             self._content_box.append(phone_header)
 
-            phone_label = Gtk.Label(label=f"+{phone}")
-            phone_label.set_xalign(0)
-            phone_label.set_selectable(True)
+            phone_label = self._make_focusable_label(
+                f"+{phone}",
+                selectable=True,
+                accessible_label=f"Phone: plus {phone}",
+            )
             self._content_box.append(phone_label)
 
         # Common chats count
@@ -250,11 +294,13 @@ class ProfileDialog(Gtk.Window):
             separator3.set_margin_bottom(8)
             self._content_box.append(separator3)
 
-            common_label = Gtk.Label(
-                label=f"{common_chats} group{'s' if common_chats != 1 else ''} in common"
+            common_text = f"{common_chats} group{'s' if common_chats != 1 else ''} in common"
+            common_label = self._make_focusable_label(
+                common_text,
+                selectable=True,
+                css_classes=["dim-label"],
+                accessible_label=common_text,
             )
-            common_label.set_xalign(0)
-            common_label.add_css_class("dim-label")
             self._content_box.append(common_label)
 
         # Update window title
