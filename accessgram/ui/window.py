@@ -5,6 +5,7 @@ and message view area.
 """
 
 import logging
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -626,7 +627,9 @@ class MessageRow(Gtk.ListBoxRow):
             elif button_count > 1:
                 buttons_suffix = f", has {button_count} buttons"
 
-        accessible_label = f"{sender}, {time_str}: {reply_prefix}{content}{status_suffix}{buttons_suffix}"
+        accessible_label = (
+            f"{sender}, {time_str}: {reply_prefix}{content}{status_suffix}{buttons_suffix}"
+        )
         self.update_property(
             [Gtk.AccessibleProperty.LABEL],
             [accessible_label],
@@ -697,6 +700,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self._reply_to_message: Any = None  # Message being replied to
         self._editing_message: Any = None  # Message being edited
         self._action_target_dialog: Any = None  # Target dialog for context menu actions
+        self._oldest_loaded_message_id: int | None = None
+        self._history_exhausted = False
+        self._loading_older_messages = False
+        self._typing_activity_state: dict[int, dict[int, tuple[str, str, float]]] = {}
+        self._last_typing_summary: dict[int, str] = {}
 
         # Media manager for downloads/uploads
         self._media_manager = MediaManager(client)
@@ -707,6 +715,17 @@ class MainWindow(Gtk.ApplicationWindow):
         self._sound_effects = get_sound_effects()
         self._sound_effects.set_enabled(self._config.sound_effects_enabled)
         self._sound_effects.set_volume(self._config.sound_effects_volume)
+
+        # Apply custom sound files from config
+        _sound_config_map = {
+            SoundEvent.MESSAGE_SENT: self._config.sound_file_message_sent,
+            SoundEvent.MESSAGE_RECEIVED: self._config.sound_file_message_received,
+            SoundEvent.MESSAGE_OTHER_CHAT: self._config.sound_file_message_other_chat,
+            SoundEvent.SYSTEM_NOTIFICATION: self._config.sound_file_system_notification,
+        }
+        for event, path in _sound_config_map.items():
+            if path:
+                self._sound_effects.set_custom_sound(event, path)
 
         self._build_ui()
         self._setup_shortcuts()
@@ -822,6 +841,19 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._chat_view.append(chat_header)
 
+        self._load_older_button = Gtk.Button(label="Load older messages")
+        self._load_older_button.set_margin_start(12)
+        self._load_older_button.set_margin_end(12)
+        self._load_older_button.set_margin_top(4)
+        self._load_older_button.set_margin_bottom(4)
+        self._load_older_button.set_halign(Gtk.Align.CENTER)
+        self._load_older_button.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            ["Load older messages"],
+        )
+        self._load_older_button.connect("clicked", self._on_load_older_messages_clicked)
+        self._chat_view.append(self._load_older_button)
+
         # Messages list
         msg_scrolled = Gtk.ScrolledWindow()
         msg_scrolled.set_vexpand(True)
@@ -919,11 +951,46 @@ class MainWindow(Gtk.ApplicationWindow):
         self._chat_view.append(self._edit_box)
 
         # Compose area
-        compose_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        compose_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         compose_box.set_margin_start(12)
         compose_box.set_margin_end(12)
         compose_box.set_margin_top(8)
         compose_box.set_margin_bottom(12)
+
+        message_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        message_row.set_hexpand(True)
+
+        # Message entry
+        message_entry_scroll = Gtk.ScrolledWindow()
+        message_entry_scroll.set_hexpand(True)
+        message_entry_scroll.set_min_content_height(96)
+        message_entry_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        self._message_entry = Gtk.TextView()
+        self._message_entry.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self._message_entry.set_accepts_tab(False)
+        self._message_entry.set_hexpand(True)
+        self._message_entry.set_top_margin(8)
+        self._message_entry.set_bottom_margin(8)
+        self._message_entry.set_left_margin(8)
+        self._message_entry.set_right_margin(8)
+        self._message_entry.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            ["Message input"],
+        )
+        self._message_entry.update_property(
+            [Gtk.AccessibleProperty.DESCRIPTION],
+            ["Type your message here. Press Enter to send, or Shift+Enter for a new line"],
+        )
+        message_key_controller = Gtk.EventControllerKey()
+        message_key_controller.connect("key-pressed", self._on_message_entry_key_pressed)
+        self._message_entry.add_controller(message_key_controller)
+        message_entry_scroll.set_child(self._message_entry)
+        message_row.append(message_entry_scroll)
+        compose_box.append(message_row)
+
+        controls_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        controls_row.set_halign(Gtk.Align.END)
 
         # Attach button
         self._attach_button = Gtk.Button()
@@ -933,29 +1000,14 @@ class MainWindow(Gtk.ApplicationWindow):
             ["Attach file"],
         )
         self._attach_button.connect("clicked", self._on_attach_clicked)
-        compose_box.append(self._attach_button)
-
-        # Message entry
-        self._message_entry = Gtk.Entry()
-        self._message_entry.set_placeholder_text("Type a message...")
-        self._message_entry.set_hexpand(True)
-        self._message_entry.update_property(
-            [Gtk.AccessibleProperty.LABEL],
-            ["Message input"],
-        )
-        self._message_entry.update_property(
-            [Gtk.AccessibleProperty.DESCRIPTION],
-            ["Type your message here and press Enter to send"],
-        )
-        self._message_entry.connect("activate", self._on_send_message)
-        compose_box.append(self._message_entry)
+        controls_row.append(self._attach_button)
 
         # Voice recorder widget
         self._voice_recorder = VoiceRecorderWidget(
             on_recording_complete=self._on_voice_recording_complete,
             on_recording_cancelled=self._on_voice_recording_cancelled,
         )
-        compose_box.append(self._voice_recorder)
+        controls_row.append(self._voice_recorder)
 
         # Send button
         send_button = Gtk.Button()
@@ -966,11 +1018,14 @@ class MainWindow(Gtk.ApplicationWindow):
             ["Send message"],
         )
         send_button.connect("clicked", self._on_send_message)
-        compose_box.append(send_button)
+        controls_row.append(send_button)
+        compose_box.append(controls_row)
 
         self._chat_view.append(compose_box)
         self._right_box.append(self._chat_view)
+        self._setup_load_older_button_tab_behavior()
         self._setup_attach_button_tab_behavior()
+        self._update_load_older_button_state()
 
         paned.set_end_child(self._right_box)
         self.set_child(paned)
@@ -1070,9 +1125,11 @@ class MainWindow(Gtk.ApplicationWindow):
         Returns:
             Tuple of (next_widget, prev_widget).
         """
-        # Tab forward goes to messages list (if visible) or message entry
+        # Tab forward goes to the history button (if available) or the messages list
         if self._chat_view.get_visible():
-            next_widget = self._messages_listbox
+            next_widget = (
+                self._load_older_button if self._load_older_button.get_sensitive() else self._messages_listbox
+            )
         else:
             next_widget = self._chat_filter
 
@@ -1087,11 +1144,11 @@ class MainWindow(Gtk.ApplicationWindow):
         Returns:
             Tuple of (next_widget, prev_widget).
         """
-        # Tab forward goes to attach button
-        next_widget = self._attach_button
+        # Tab forward goes to the compose box
+        next_widget = self._message_entry
 
-        # Tab backward goes to chat list
-        prev_widget = self._chat_listbox
+        # Tab backward goes to the history button when available
+        prev_widget = self._load_older_button if self._load_older_button.get_sensitive() else self._chat_listbox
 
         return next_widget, prev_widget
 
@@ -1129,8 +1186,8 @@ class MainWindow(Gtk.ApplicationWindow):
                         if current_idx < len(buttons) - 1:
                             buttons[current_idx + 1].grab_focus()
                             return True
-                        # On last button, go to attach button
-                        self._attach_button.grab_focus()
+                        # On last button, go to the compose box
+                        self._message_entry.grab_focus()
                         return True
 
                     # Shift+Tab
@@ -1144,16 +1201,22 @@ class MainWindow(Gtk.ApplicationWindow):
                             # On first button, go back to listbox (select the row)
                             self._messages_listbox.grab_focus()
                             return True
-                        # If not on a button, do normal Shift+Tab
-                        self._chat_listbox.grab_focus()
+                        # If not on a button, move to the history button
+                        if self._load_older_button.get_sensitive():
+                            self._load_older_button.grab_focus()
+                        else:
+                            self._chat_listbox.grab_focus()
                         return True
 
             # Default Tab behavior for rows without buttons
             if keyval == Gdk.KEY_ISO_Left_Tab:
-                self._chat_listbox.grab_focus()
+                if self._load_older_button.get_sensitive():
+                    self._load_older_button.grab_focus()
+                else:
+                    self._chat_listbox.grab_focus()
                 return True
             elif keyval == Gdk.KEY_Tab:
-                self._attach_button.grab_focus()
+                self._message_entry.grab_focus()
                 return True
 
             return False
@@ -1161,16 +1224,30 @@ class MainWindow(Gtk.ApplicationWindow):
         controller.connect("key-pressed", on_key_pressed)
         self._messages_listbox.add_controller(controller)
 
+    def _setup_load_older_button_tab_behavior(self) -> None:
+        """Set up Tab behavior for the load-older button."""
+        from gi.repository import Gdk
+
+        controller = Gtk.EventControllerKey()
+
+        def on_key_pressed(ctrl, keyval, keycode, state):
+            if keyval == Gdk.KEY_Tab:
+                self._messages_listbox.grab_focus()
+                return True
+            if keyval == Gdk.KEY_ISO_Left_Tab:
+                self._chat_listbox.grab_focus()
+                return True
+            return False
+
+        controller.connect("key-pressed", on_key_pressed)
+        self._load_older_button.add_controller(controller)
+
     def _setup_attach_button_tab_behavior(self) -> None:
-        """Set up Shift+Tab on attach button to focus the messages listbox.
+        """Set up Shift+Tab on attach button to focus the compose box.
 
-        Without this, GTK's default backward navigation lands on a selectable
-        label inside a MessageRow instead of the ListBox row itself, which
-        breaks arrow-key navigation.
-
-        If a row with inline buttons is selected (i.e. Tab traversed through
-        those buttons to reach the attach button), Shift+Tab returns to the
-        last inline button, mirroring the forward Tab path.
+        The compose box sits before the controls row in the intended focus
+        order, so backward navigation from the attach button should return to
+        the message input rather than jumping back into the message list.
         """
         from gi.repository import Gdk
 
@@ -1178,28 +1255,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         def on_key_pressed(ctrl, keyval, keycode, state):
             if keyval == Gdk.KEY_ISO_Left_Tab:
-                selected_row = self._messages_listbox.get_selected_row()
-
-                if selected_row and isinstance(selected_row, MessageRow):
-                    # If the selected row has inline buttons, focus the last
-                    # button (reverse of Tab which went last-button → attach)
-                    buttons_widget = selected_row._inline_buttons_widget
-                    if buttons_widget and buttons_widget._buttons:
-                        buttons_widget._buttons[-1].grab_focus()
-                        return True
-                    # Otherwise return to the previously selected row
-                    selected_row.grab_focus()
-                    return True
-
-                # No row selected — select and focus the last row
-                last_row = self._messages_listbox.get_last_child()
-                if last_row and isinstance(last_row, Gtk.ListBoxRow):
-                    self._messages_listbox.select_row(last_row)
-                    last_row.grab_focus()
-                    return True
-
-                # No messages at all — fall back to chat list
-                self._chat_listbox.grab_focus()
+                self._message_entry.grab_focus()
                 return True
             return False
 
@@ -1417,6 +1473,14 @@ class MainWindow(Gtk.ApplicationWindow):
             )
         )
 
+        # Page Up: load older messages in the current chat
+        controller.add_shortcut(
+            Gtk.Shortcut(
+                trigger=Gtk.ShortcutTrigger.parse_string("Page_Up"),
+                action=Gtk.CallbackAction.new(self._on_load_older_messages_shortcut),
+            )
+        )
+
     def _setup_event_handlers(self) -> None:
         """Set up Telegram event handlers."""
         self._client.on_new_message(self._on_new_message_event)
@@ -1432,6 +1496,39 @@ class MainWindow(Gtk.ApplicationWindow):
         elif self._message_entry.has_focus():
             self._chat_listbox.grab_focus()
         return True
+
+    def _on_load_older_messages_shortcut(self, *args) -> bool:
+        """Handle the Page Up shortcut for loading older messages."""
+        if not self._current_dialog or self._loading_older_messages:
+            return False
+
+        run_async(self._load_older_messages())
+        return True
+
+    def _on_load_older_messages_clicked(self, button: Gtk.Button) -> None:
+        """Load older messages for the current chat."""
+        if not self._current_dialog or self._loading_older_messages:
+            return
+        run_async(self._load_older_messages())
+
+    def _update_load_older_button_state(self) -> None:
+        """Update the load-older button label and sensitivity."""
+        if self._loading_older_messages:
+            self._load_older_button.set_label("Loading older messages...")
+            self._load_older_button.set_sensitive(False)
+            return
+
+        self._load_older_button.set_label("Load older messages")
+        has_chat = self._current_dialog is not None
+        can_load_more = has_chat and self._oldest_loaded_message_id is not None and not self._history_exhausted
+        self._load_older_button.set_sensitive(bool(can_load_more))
+
+    def _track_message_row(self, row: MessageRow, message: Any) -> None:
+        """Track message rows that need later updates."""
+        if message.out and message.id:
+            self._message_rows[message.id] = row
+        elif message.id and hasattr(message, "buttons") and message.buttons:
+            self._message_rows[message.id] = row
 
     # =========================================================================
     # Dialog Loading
@@ -1557,12 +1654,21 @@ class MainWindow(Gtk.ApplicationWindow):
                     break
                 self._messages_listbox.remove(row)
             self._message_rows.clear()
+            self._oldest_loaded_message_id = None
+            self._history_exhausted = False
+            self._typing_activity_state.clear()
+            self._last_typing_summary.clear()
+            self._update_load_older_button_state()
 
             # Load messages (newest first, then reverse for display)
             messages = await self._client.get_messages(
                 self._current_dialog.entity,
                 limit=self._config.max_messages_to_load,
             )
+
+            message_ids = [message.id for message in messages if getattr(message, "id", None)]
+            self._oldest_loaded_message_id = min(message_ids) if message_ids else None
+            self._history_exhausted = len(messages) < self._config.max_messages_to_load
 
             # Get the read_outbox_max_id to determine which outgoing messages have been read
             read_outbox_max_id = getattr(self._current_dialog.dialog, "read_outbox_max_id", 0)
@@ -1572,15 +1678,11 @@ class MainWindow(Gtk.ApplicationWindow):
                 if message.text or message.media:
                     row = MessageRow(message, self._media_manager, self._client)
                     self._messages_listbox.append(row)
-                    # Track outgoing message rows for read status updates
-                    if message.out and message.id:
-                        self._message_rows[message.id] = row
-                        # Mark as read if already seen by recipient
-                        if message.id <= read_outbox_max_id:
-                            row.mark_as_read()
-                    # Also track messages with inline buttons for updates
-                    elif message.id and hasattr(message, "buttons") and message.buttons:
-                        self._message_rows[message.id] = row
+                    self._track_message_row(row, message)
+                    if message.out and message.id and message.id <= read_outbox_max_id:
+                        row.mark_as_read()
+
+            self._update_load_older_button_state()
 
             # Mark messages as read
             try:
@@ -1606,6 +1708,72 @@ class MainWindow(Gtk.ApplicationWindow):
                 return False
 
             GLib.idle_add(focus_and_announce)
+
+    async def _load_older_messages(self) -> None:
+        """Load an older page of messages for the current chat."""
+        if (
+            not self._current_dialog
+            or self._oldest_loaded_message_id is None
+            or self._history_exhausted
+            or self._loading_older_messages
+        ):
+            return
+
+        self._loading_older_messages = True
+        GLib.idle_add(self._update_load_older_button_state)
+
+        try:
+            messages = await self._client.get_messages(
+                self._current_dialog.entity,
+                limit=self._config.max_messages_to_load,
+                offset_id=self._oldest_loaded_message_id,
+            )
+
+            if not messages:
+                self._history_exhausted = True
+
+                def announce_no_more() -> bool:
+                    self._update_load_older_button_state()
+                    self._announcer.announce_polite("No older messages available")
+                    return False
+
+                GLib.idle_add(announce_no_more)
+                return
+
+            message_ids = [message.id for message in messages if getattr(message, "id", None)]
+            if message_ids:
+                self._oldest_loaded_message_id = min(message_ids)
+            if len(messages) < self._config.max_messages_to_load:
+                self._history_exhausted = True
+
+            def prepend_messages() -> bool:
+                insert_index = 0
+                for message in reversed(messages):
+                    if not (message.text or message.media):
+                        continue
+                    row = MessageRow(message, self._media_manager, self._client)
+                    self._messages_listbox.insert(row, insert_index)
+                    self._track_message_row(row, message)
+                    insert_index += 1
+
+                self._update_load_older_button_state()
+                self._announcer.announce_polite(f"Loaded {insert_index} older messages")
+                return False
+
+            GLib.idle_add(prepend_messages)
+
+        except Exception as e:
+            logger.exception("Error loading older messages: %s", e)
+
+            def announce_error() -> bool:
+                self._update_load_older_button_state()
+                self._announcer.announce_error(f"Failed to load older messages: {e}")
+                return False
+
+            GLib.idle_add(announce_error)
+        finally:
+            self._loading_older_messages = False
+            GLib.idle_add(self._update_load_older_button_state)
 
     # =========================================================================
     # Reply Handling
@@ -1678,9 +1846,64 @@ class MainWindow(Gtk.ApplicationWindow):
     # Message Sending
     # =========================================================================
 
+    def _get_message_entry_text(self) -> str:
+        """Get the current compose text."""
+        buffer = self._message_entry.get_buffer()
+        start = buffer.get_start_iter()
+        end = buffer.get_end_iter()
+        return buffer.get_text(start, end, False)
+
+    def _set_message_entry_text(self, text: str) -> None:
+        """Replace the current compose text."""
+        self._message_entry.get_buffer().set_text(text)
+
+    def _on_message_entry_key_pressed(
+        self,
+        controller: Gtk.EventControllerKey,
+        keyval: int,
+        keycode: int,
+        state: int,
+    ) -> bool:
+        """Handle compose-box keyboard navigation and sending."""
+        from gi.repository import Gdk
+
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            if state & Gdk.ModifierType.SHIFT_MASK:
+                return False
+
+            self._on_send_message(self._message_entry)
+            return True
+
+        if keyval == Gdk.KEY_Tab:
+            self._attach_button.grab_focus()
+            return True
+
+        if keyval == Gdk.KEY_ISO_Left_Tab:
+            selected_row = self._messages_listbox.get_selected_row()
+
+            if selected_row and isinstance(selected_row, MessageRow):
+                buttons_widget = selected_row._inline_buttons_widget
+                if buttons_widget and buttons_widget._buttons:
+                    buttons_widget._buttons[-1].grab_focus()
+                    return True
+
+                selected_row.grab_focus()
+                return True
+
+            last_row = self._messages_listbox.get_last_child()
+            if last_row and isinstance(last_row, Gtk.ListBoxRow):
+                self._messages_listbox.select_row(last_row)
+                last_row.grab_focus()
+                return True
+
+            self._chat_listbox.grab_focus()
+            return True
+
+        return False
+
     def _on_send_message(self, widget: Gtk.Widget) -> None:
         """Handle send message action."""
-        text = self._message_entry.get_text().strip()
+        text = self._get_message_entry_text().strip()
         if not text or not self._current_dialog:
             return
 
@@ -1689,7 +1912,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._do_edit_message(text)
             return
 
-        self._message_entry.set_text("")
+        self._set_message_entry_text("")
         self._message_entry.set_sensitive(False)
 
         # Get reply_to message ID if replying
@@ -1713,7 +1936,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._announcer.announce("No changes made")
             return
 
-        self._message_entry.set_text("")
+        self._set_message_entry_text("")
         self._message_entry.set_sensitive(False)
 
         create_task_with_callback(
@@ -1839,16 +2062,20 @@ class MainWindow(Gtk.ApplicationWindow):
         if chat_id is not None and not message.out and chat_id not in self._muted_chats:
             run_async(self._prepare_and_notify_message(message, chat_id))
 
+        # Play sounds for incoming messages in unmuted chats
+        if (
+            not message.out
+            and chat_id is not None
+            and chat_id not in self._muted_chats
+            and self._window_is_focused()
+        ):
+            if is_current_chat:
+                self._sound_effects.play(SoundEvent.MESSAGE_RECEIVED)
+            else:
+                self._sound_effects.play(SoundEvent.MESSAGE_OTHER_CHAT)
+
         # Add to message view if current chat
         if is_current_chat:
-            if (
-                not message.out
-                and chat_id is not None
-                and chat_id not in self._muted_chats
-                and self._window_is_focused()
-            ):
-                self._sound_effects.play(SoundEvent.MESSAGE_RECEIVED)
-
             # Fetch sender and reply message, then add to view
             run_async(self._prepare_and_add_message(message, chat_id))
             # Mark as read since we're viewing this chat
@@ -1980,17 +2207,11 @@ class MainWindow(Gtk.ApplicationWindow):
         """Announce a new message to the screen reader."""
         is_muted = chat_id in self._muted_chats
         if self._config.announce_new_messages and not message.out and not is_muted:
-            sender = "Unknown"
-            if message.sender:
-                if hasattr(message.sender, "first_name"):
-                    sender = message.sender.first_name or "Unknown"
-                elif hasattr(message.sender, "title"):
-                    sender = message.sender.title or "Unknown"
+            sender = self._get_message_sender_name(message)
+            content = message.text or format_message_preview(message)
 
-            preview = message.text[:50] if message.text else "Media"
-
-            def announce(s=sender, p=preview):
-                self._announcer.announce(f"New message from {s}: {p}")
+            def announce(s=sender, c=content):
+                self._announcer.announce(f"New message from {s}: {c}")
                 return False
 
             GLib.idle_add(announce)
@@ -2000,12 +2221,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if message.text or message.media:
             row = MessageRow(message, self._media_manager, self._client)
             self._messages_listbox.append(row)
-            # Track outgoing message rows for read status updates
-            if message.out and message.id:
-                self._message_rows[message.id] = row
-            # Also track messages with inline buttons for updates
-            if message.id and hasattr(message, "buttons") and message.buttons:
-                self._message_rows[message.id] = row
+            self._track_message_row(row, message)
         return False  # Don't repeat
 
     def _on_message_edited_event(self, event) -> None:
@@ -2066,27 +2282,119 @@ class MainWindow(Gtk.ApplicationWindow):
 
         GLib.idle_add(update_read_status)
 
-    def _on_user_update_event(self, event) -> None:
-        """Handle user status update event."""
-        # Get the user from the event
-        user = getattr(event, "user", None)
+    async def _prepare_user_update_event(self, event) -> None:
+        """Fetch user information for a user update event if needed."""
+        user = getattr(event, "user", None) or getattr(event, "sender", None)
         if not user:
+            try:
+                user = await event.get_user()
+            except Exception as e:
+                logger.debug("Could not fetch user update sender: %s", e)
+                return
+
+        GLib.idle_add(self._apply_user_update_event, event, user)
+
+    def _apply_user_update_event(self, event, user: Any) -> bool:
+        """Apply user update changes on the GTK main thread."""
+        user_id = getattr(user, "id", None)
+        if user_id:
+            for dialog_id, row in self._dialog_rows.items():
+                entity = getattr(row.dialog, "entity", None)
+                if entity and getattr(entity, "id", None) == user_id:
+                    row.update_user_status(user)
+                    break
+
+        self._maybe_announce_typing_event(event, user)
+        return False
+
+    def _join_names(self, names: list[str]) -> str:
+        """Join a list of names into a natural-language string."""
+        names = [name for name in names if name]
+        if not names:
+            return ""
+        if len(names) == 1:
+            return names[0]
+        if len(names) == 2:
+            return f"{names[0]} and {names[1]}"
+        return f"{', '.join(names[:-1])}, and {names[-1]}"
+
+    def _format_typing_summary(self, activities: dict[int, tuple[str, str, float]]) -> str:
+        """Build a readable summary of current chat activity."""
+        grouped: dict[str, list[str]] = {"typing": [], "recording": [], "uploading": []}
+        for name, kind, _expires_at in activities.values():
+            if kind in grouped:
+                grouped[kind].append(name)
+
+        parts: list[str] = []
+
+        for kind, singular, plural in (
+            ("typing", "is typing", "are typing"),
+            ("recording", "is recording audio", "are recording audio"),
+            ("uploading", "is uploading", "are uploading"),
+        ):
+            names = sorted(set(grouped[kind]))
+            if not names:
+                continue
+            joined = self._join_names(names)
+            verb = singular if len(names) == 1 else plural
+            parts.append(f"{joined} {verb}")
+
+        return "; ".join(parts)
+
+    def _maybe_announce_typing_event(self, event, user: Any) -> None:
+        """Announce typing/recording/uploading activity for the current chat."""
+        if not self._config.typing_announcements_enabled or not self._current_dialog:
+            return
+
+        chat_id = getattr(event, "chat_id", None) or getattr(event, "user_id", None)
+        if chat_id != self._current_dialog.id:
             return
 
         user_id = getattr(user, "id", None)
         if not user_id:
             return
 
-        def update_status():
-            # Update the chat row for this user
-            for dialog_id, row in self._dialog_rows.items():
-                entity = getattr(row.dialog, "entity", None)
-                if entity and getattr(entity, "id", None) == user_id:
-                    row.update_user_status(user)
-                    break
-            return False  # Don't repeat
+        timeout_seconds = max(1.0, float(self._config.typing_activity_timeout_seconds))
+        now = time.monotonic()
 
-        GLib.idle_add(update_status)
+        chat_state = self._typing_activity_state.setdefault(chat_id, {})
+        previous_summary = self._last_typing_summary.get(chat_id, "")
+
+        # Expire stale entries first so summaries stay honest.
+        expired_user_ids = [
+            active_user_id
+            for active_user_id, (_name, _kind, expires_at) in chat_state.items()
+            if expires_at <= now
+        ]
+        for active_user_id in expired_user_ids:
+            chat_state.pop(active_user_id, None)
+
+        sender_name = self._get_entity_name(user)
+
+        if getattr(event, "cancel", False):
+            chat_state.pop(user_id, None)
+        elif getattr(event, "typing", False):
+            chat_state[user_id] = (sender_name, "typing", now + timeout_seconds)
+        elif getattr(event, "recording", False):
+            chat_state[user_id] = (sender_name, "recording", now + timeout_seconds)
+        elif getattr(event, "uploading", False):
+            chat_state[user_id] = (sender_name, "uploading", now + timeout_seconds)
+        else:
+            return
+
+        current_summary = self._format_typing_summary(chat_state)
+        self._last_typing_summary[chat_id] = current_summary
+
+        if current_summary and current_summary != previous_summary:
+            self._announcer.announce_polite(current_summary)
+
+    def _on_user_update_event(self, event) -> None:
+        """Handle user status and typing update events."""
+        user = getattr(event, "user", None) or getattr(event, "sender", None)
+        if user:
+            GLib.idle_add(self._apply_user_update_event, event, user)
+        else:
+            run_async(self._prepare_user_update_event(event))
 
     # =========================================================================
     # Actions
@@ -2674,7 +2982,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._edit_box.set_visible(True)
 
         # Populate message entry with current text
-        self._message_entry.set_text(message.text)
+        self._set_message_entry_text(message.text)
         self._message_entry.grab_focus()
 
         self._announcer.announce("Editing message")
@@ -2690,7 +2998,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._editing_message = None
         self._edit_box.set_visible(False)
         self._edit_preview_label.set_label("")
-        self._message_entry.set_text("")
+        self._set_message_entry_text("")
 
     # =========================================================================
     # Delete Message

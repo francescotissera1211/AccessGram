@@ -6,6 +6,7 @@ and coordinates between the Telegram client and UI.
 
 import asyncio
 import logging
+import os
 import sys
 
 import gi
@@ -28,6 +29,13 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+
+
+def _basename_or_default(path: str) -> str:
+    """Return the file basename for display, or the bundled Telegram default when empty."""
+    if path:
+        return os.path.basename(path)
+    return "Telegram default"
 
 
 class AccessGramApplication(Gtk.Application):
@@ -134,20 +142,28 @@ class AccessGramApplication(Gtk.Application):
             self._preferences_window.present()
             return
 
+        from accessgram.audio.sound_effects import (
+            SOUND_EVENT_LABELS,
+            SoundEvent,
+            get_sound_effects,
+        )
+
         preferences = Gtk.Window(
             title="AccessGram - Preferences",
-            default_width=420,
-            default_height=320,
+            default_width=480,
+            default_height=560,
             transient_for=self._main_window or self._login_window,
             modal=True,
         )
         preferences.set_application(self)
 
-        # Make it accessible
         preferences.update_property(
             [Gtk.AccessibleProperty.LABEL],
             ["AccessGram Preferences"],
         )
+
+        scroll = Gtk.ScrolledWindow(vexpand=True)
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         content.set_margin_top(24)
@@ -159,6 +175,13 @@ class AccessGramApplication(Gtk.Application):
         title.add_css_class("title-2")
         title.set_xalign(0)
         content.append(title)
+
+        # -- Sounds section ------------------------------------------------
+
+        sounds_heading = Gtk.Label(label="Sounds")
+        sounds_heading.add_css_class("heading")
+        sounds_heading.set_xalign(0)
+        content.append(sounds_heading)
 
         sounds_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         sounds_row.set_hexpand(True)
@@ -176,6 +199,191 @@ class AccessGramApplication(Gtk.Application):
         )
         sounds_row.append(sounds_switch)
         content.append(sounds_row)
+
+        # Mapping from SoundEvent to config attribute name
+        _event_config_attrs: dict[SoundEvent, str] = {
+            SoundEvent.MESSAGE_SENT: "sound_file_message_sent",
+            SoundEvent.MESSAGE_RECEIVED: "sound_file_message_received",
+            SoundEvent.MESSAGE_OTHER_CHAT: "sound_file_message_other_chat",
+            SoundEvent.SYSTEM_NOTIFICATION: "sound_file_system_notification",
+        }
+
+        sound_effects = get_sound_effects()
+
+        for event in SoundEvent:
+            event_label = SOUND_EVENT_LABELS.get(event, event.name)
+            config_attr = _event_config_attrs[event]
+            current_path = getattr(self._config, config_attr, "")
+
+            event_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+
+            label_widget = Gtk.Label(label=event_label)
+            label_widget.set_xalign(0)
+            label_widget.add_css_class("caption-heading")
+            event_box.append(label_widget)
+
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+            file_label = Gtk.Label(
+                label=_basename_or_default(current_path),
+                ellipsize=3,  # Pango.EllipsizeMode.END
+            )
+            file_label.set_xalign(0)
+            file_label.set_hexpand(True)
+            file_label.update_property(
+                [Gtk.AccessibleProperty.LABEL],
+                [f"Current sound for {event_label}"],
+            )
+            row.append(file_label)
+
+            choose_btn = Gtk.Button(label="Choose...")
+            choose_btn.update_property(
+                [Gtk.AccessibleProperty.LABEL],
+                [f"Choose sound file for {event_label}"],
+            )
+            row.append(choose_btn)
+
+            preview_btn = Gtk.Button(label="Preview")
+            preview_btn.update_property(
+                [Gtk.AccessibleProperty.LABEL],
+                [f"Preview sound for {event_label}"],
+            )
+            row.append(preview_btn)
+
+            reset_btn = Gtk.Button(label="Reset")
+            reset_btn.update_property(
+                [Gtk.AccessibleProperty.LABEL],
+                [f"Reset {event_label} to bundled Telegram default sound"],
+            )
+            row.append(reset_btn)
+
+            event_box.append(row)
+            content.append(event_box)
+
+            # -- callbacks (capture loop vars) --
+
+            def _make_choose_cb(
+                ev: SoundEvent, attr: str, lbl: Gtk.Label
+            ):  # type: ignore[no-untyped-def]
+                def on_choose(_btn: Gtk.Button) -> None:
+                    dialog = Gtk.FileDialog()
+                    dialog.set_title(f"Select sound for {SOUND_EVENT_LABELS.get(ev, '')}")
+
+                    audio_filter = Gtk.FileFilter()
+                    audio_filter.set_name("Audio files")
+                    for pattern in ("*.wav", "*.ogg", "*.opus", "*.mp3", "*.m4a", "*.flac"):
+                        audio_filter.add_pattern(pattern)
+
+                    filters = Gio.ListStore.new(Gtk.FileFilter)
+                    filters.append(audio_filter)
+                    dialog.set_filters(filters)
+                    dialog.set_default_filter(audio_filter)
+
+                    dialog.open(
+                        preferences, None, lambda d, res: _on_file_chosen(d, res, ev, attr, lbl)
+                    )
+
+                return on_choose
+
+            def _on_file_chosen(
+                dialog: Gtk.FileDialog,
+                result: Gio.AsyncResult,
+                ev: SoundEvent,
+                attr: str,
+                lbl: Gtk.Label,
+            ) -> None:
+                try:
+                    gfile = dialog.open_finish(result)
+                except GLib.Error:
+                    return
+                if not gfile:
+                    return
+                path = gfile.get_path() or ""
+                if not path:
+                    return
+
+                setattr(self._config, attr, path)
+                self._config.save()
+                sound_effects.set_custom_sound(ev, path)
+                lbl.set_label(_basename_or_default(path))
+
+            def _make_preview_cb(ev: SoundEvent):  # type: ignore[no-untyped-def]
+                def on_preview(_btn: Gtk.Button) -> None:
+                    sound_effects.play(ev)
+
+                return on_preview
+
+            def _make_reset_cb(
+                ev: SoundEvent, attr: str, lbl: Gtk.Label
+            ):  # type: ignore[no-untyped-def]
+                def on_reset(_btn: Gtk.Button) -> None:
+                    setattr(self._config, attr, "")
+                    self._config.save()
+                    sound_effects.clear_custom_sound(ev)
+                    lbl.set_label("Telegram default")
+
+                return on_reset
+
+            choose_btn.connect("clicked", _make_choose_cb(event, config_attr, file_label))
+            preview_btn.connect("clicked", _make_preview_cb(event))
+            reset_btn.connect("clicked", _make_reset_cb(event, config_attr, file_label))
+
+        accessibility_separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        content.append(accessibility_separator)
+
+        accessibility_title = Gtk.Label(label="Accessibility")
+        accessibility_title.add_css_class("heading")
+        accessibility_title.set_xalign(0)
+        content.append(accessibility_title)
+
+        typing_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        typing_row.set_hexpand(True)
+
+        typing_label = Gtk.Label(label="Announce typing activity")
+        typing_label.set_xalign(0)
+        typing_label.set_hexpand(True)
+        typing_row.append(typing_label)
+
+        typing_switch = Gtk.Switch()
+        typing_switch.set_active(self._config.typing_announcements_enabled)
+        typing_switch.update_property(
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.HELP_TEXT],
+            [
+                "Announce typing activity",
+                "Toggle screen reader announcements for typing, recording, and uploading in the current chat",
+            ],
+        )
+        typing_row.append(typing_switch)
+        content.append(typing_row)
+
+        typing_timeout_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        typing_timeout_box.set_hexpand(True)
+
+        typing_timeout_label = Gtk.Label(label="Typing activity timeout (seconds)")
+        typing_timeout_label.set_xalign(0)
+        typing_timeout_label.set_hexpand(True)
+        typing_timeout_box.append(typing_timeout_label)
+
+        typing_timeout_adjustment = Gtk.Adjustment(
+            value=self._config.typing_activity_timeout_seconds,
+            lower=1.0,
+            upper=30.0,
+            step_increment=0.5,
+            page_increment=1.0,
+            page_size=0.0,
+        )
+        typing_timeout_spin = Gtk.SpinButton(adjustment=typing_timeout_adjustment, climb_rate=0.5, digits=1)
+        typing_timeout_spin.set_numeric(True)
+        typing_timeout_spin.set_sensitive(self._config.typing_announcements_enabled)
+        typing_timeout_spin.update_property(
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.HELP_TEXT],
+            [
+                "Typing activity timeout in seconds",
+                "How long someone stays in the typing activity summary before AccessGram assumes the activity has stopped if no further update arrives",
+            ],
+        )
+        typing_timeout_box.append(typing_timeout_spin)
+        content.append(typing_timeout_box)
 
         separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         content.append(separator)
@@ -299,12 +507,22 @@ class AccessGramApplication(Gtk.Application):
             enabled = bool(switch.get_active())
             self._config.sound_effects_enabled = enabled
             self._config.save()
-
-            from accessgram.audio.sound_effects import get_sound_effects
-
-            get_sound_effects().set_enabled(enabled)
+            sound_effects.set_enabled(enabled)
 
         sounds_switch.connect("notify::active", on_sounds_toggled)
+
+        def on_typing_toggled(switch: Gtk.Switch, _param: object) -> None:
+            enabled = bool(switch.get_active())
+            self._config.typing_announcements_enabled = enabled
+            typing_timeout_spin.set_sensitive(enabled)
+            self._config.save()
+
+        def on_typing_timeout_changed(spin: Gtk.SpinButton) -> None:
+            self._config.typing_activity_timeout_seconds = float(spin.get_value())
+            self._config.save()
+
+        typing_switch.connect("notify::active", on_typing_toggled)
+        typing_timeout_spin.connect("value-changed", on_typing_timeout_changed)
 
         def on_close_request(*_args: object) -> bool:
             self._preferences_window = None
@@ -312,7 +530,8 @@ class AccessGramApplication(Gtk.Application):
 
         preferences.connect("close-request", on_close_request)
 
-        preferences.set_child(content)
+        scroll.set_child(content)
+        preferences.set_child(scroll)
         self._preferences_window = preferences
         preferences.present()
 

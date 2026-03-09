@@ -104,11 +104,19 @@ class Config:
     announce_new_messages: bool = True
     announce_sent_messages: bool = True
     high_contrast: bool = False
+    typing_announcements_enabled: bool = True
+    typing_activity_timeout_seconds: float = 5.0
 
     # Audio settings
     voice_message_volume: float = 1.0
     sound_effects_enabled: bool = True
-    sound_effects_volume: float = 0.35
+    sound_effects_volume: float = 2.0
+
+    # Custom sound file paths (empty string = use bundled default sound)
+    sound_file_message_sent: str = ""
+    sound_file_message_received: str = ""
+    sound_file_message_other_chat: str = ""
+    sound_file_system_notification: str = ""
 
     # Internal - not saved
     _config_path: Path = field(default_factory=lambda: get_config_dir() / "config.json")
@@ -127,9 +135,15 @@ class Config:
             "announce_new_messages": self.announce_new_messages,
             "announce_sent_messages": self.announce_sent_messages,
             "high_contrast": self.high_contrast,
+            "typing_announcements_enabled": self.typing_announcements_enabled,
+            "typing_activity_timeout_seconds": self.typing_activity_timeout_seconds,
             "voice_message_volume": self.voice_message_volume,
             "sound_effects_enabled": self.sound_effects_enabled,
             "sound_effects_volume": self.sound_effects_volume,
+            "sound_file_message_sent": self.sound_file_message_sent,
+            "sound_file_message_received": self.sound_file_message_received,
+            "sound_file_message_other_chat": self.sound_file_message_other_chat,
+            "sound_file_system_notification": self.sound_file_system_notification,
         }
 
         try:
@@ -179,9 +193,24 @@ class Config:
             self.announce_sent_messages = bool(data["announce_sent_messages"])
         if "high_contrast" in data:
             self.high_contrast = bool(data["high_contrast"])
+        if "typing_announcements_enabled" in data:
+            self.typing_announcements_enabled = bool(data["typing_announcements_enabled"])
+        if "typing_activity_timeout_seconds" in data:
+            self.typing_activity_timeout_seconds = float(data["typing_activity_timeout_seconds"])
+        elif "typing_announcement_debounce_seconds" in data:
+            # Backward compatibility with older config files.
+            self.typing_activity_timeout_seconds = float(data["typing_announcement_debounce_seconds"])
         if "voice_message_volume" in data:
             self.voice_message_volume = float(data["voice_message_volume"])
         if "sound_effects_enabled" in data:
             self.sound_effects_enabled = bool(data["sound_effects_enabled"])
         if "sound_effects_volume" in data:
             self.sound_effects_volume = float(data["sound_effects_volume"])
+        if "sound_file_message_sent" in data:
+            self.sound_file_message_sent = str(data["sound_file_message_sent"])
+        if "sound_file_message_received" in data:
+            self.sound_file_message_received = str(data["sound_file_message_received"])
+        if "sound_file_message_other_chat" in data:
+            self.sound_file_message_other_chat = str(data["sound_file_message_other_chat"])
+        if "sound_file_system_notification" in data:
+            self.sound_file_system_notification = str(data["sound_file_system_notification"])
