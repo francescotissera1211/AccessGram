@@ -200,6 +200,26 @@ class AccessGramApplication(Gtk.Application):
         sounds_row.append(sounds_switch)
         content.append(sounds_row)
 
+        voice_shortcut_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        voice_shortcut_row.set_hexpand(True)
+
+        voice_shortcut_label = Gtk.Label(label="Voice shortcut stops and sends immediately")
+        voice_shortcut_label.set_xalign(0)
+        voice_shortcut_label.set_hexpand(True)
+        voice_shortcut_row.append(voice_shortcut_label)
+
+        voice_shortcut_switch = Gtk.Switch()
+        voice_shortcut_switch.set_active(self._config.voice_recording_shortcut_sends_immediately)
+        voice_shortcut_switch.update_property(
+            [Gtk.AccessibleProperty.LABEL, Gtk.AccessibleProperty.HELP_TEXT],
+            [
+                "Voice shortcut stops and sends immediately",
+                "If enabled, pressing Control Shift R to stop a recording sends the voice message immediately. If disabled, stopping enters review mode and focuses the send and cancel controls.",
+            ],
+        )
+        voice_shortcut_row.append(voice_shortcut_switch)
+        content.append(voice_shortcut_row)
+
         # Mapping from SoundEvent to config attribute name
         _event_config_attrs: dict[SoundEvent, str] = {
             SoundEvent.MESSAGE_SENT: "sound_file_message_sent",
@@ -510,6 +530,15 @@ class AccessGramApplication(Gtk.Application):
             sound_effects.set_enabled(enabled)
 
         sounds_switch.connect("notify::active", on_sounds_toggled)
+
+        def on_voice_shortcut_toggled(switch: Gtk.Switch, _param: object) -> None:
+            enabled = bool(switch.get_active())
+            self._config.voice_recording_shortcut_sends_immediately = enabled
+            self._config.save()
+            if self._main_window and hasattr(self._main_window, "_voice_recorder"):
+                self._main_window._voice_recorder.set_shortcut_sends_immediately(enabled)
+
+        voice_shortcut_switch.connect("notify::active", on_voice_shortcut_toggled)
 
         def on_typing_toggled(switch: Gtk.Switch, _param: object) -> None:
             enabled = bool(switch.get_active())

@@ -109,6 +109,7 @@ class Config:
 
     # Audio settings
     voice_message_volume: float = 1.0
+    voice_recording_shortcut_sends_immediately: bool = False
     sound_effects_enabled: bool = True
     sound_effects_volume: float = 2.0
 
@@ -138,6 +139,7 @@ class Config:
             "typing_announcements_enabled": self.typing_announcements_enabled,
             "typing_activity_timeout_seconds": self.typing_activity_timeout_seconds,
             "voice_message_volume": self.voice_message_volume,
+            "voice_recording_shortcut_sends_immediately": self.voice_recording_shortcut_sends_immediately,
             "sound_effects_enabled": self.sound_effects_enabled,
             "sound_effects_volume": self.sound_effects_volume,
             "sound_file_message_sent": self.sound_file_message_sent,
@@ -202,6 +204,10 @@ class Config:
             self.typing_activity_timeout_seconds = float(data["typing_announcement_debounce_seconds"])
         if "voice_message_volume" in data:
             self.voice_message_volume = float(data["voice_message_volume"])
+        if "voice_recording_shortcut_sends_immediately" in data:
+            self.voice_recording_shortcut_sends_immediately = bool(
+                data["voice_recording_shortcut_sends_immediately"]
+            )
         if "sound_effects_enabled" in data:
             self.sound_effects_enabled = bool(data["sound_effects_enabled"])
         if "sound_effects_volume" in data:

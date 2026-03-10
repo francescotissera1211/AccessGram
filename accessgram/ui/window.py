@@ -1006,6 +1006,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._voice_recorder = VoiceRecorderWidget(
             on_recording_complete=self._on_voice_recording_complete,
             on_recording_cancelled=self._on_voice_recording_cancelled,
+            shortcut_sends_immediately=self._config.voice_recording_shortcut_sends_immediately,
         )
         controls_row.append(self._voice_recorder)
 
@@ -1481,6 +1482,14 @@ class MainWindow(Gtk.ApplicationWindow):
             )
         )
 
+        # Ctrl+Shift+R: toggle voice recording for the current chat
+        controller.add_shortcut(
+            Gtk.Shortcut(
+                trigger=Gtk.ShortcutTrigger.parse_string("<Control><Shift>r"),
+                action=Gtk.CallbackAction.new(self._on_voice_recording_shortcut),
+            )
+        )
+
     def _setup_event_handlers(self) -> None:
         """Set up Telegram event handlers."""
         self._client.on_new_message(self._on_new_message_event)
@@ -1490,12 +1499,29 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_escape(self, *args) -> bool:
         """Handle Escape key."""
+        if self._voice_recorder.is_recording:
+            self._voice_recorder.cancel_recording()
+            return True
+
         if self._chat_filter.has_focus():
             self._chat_filter.set_text("")
             self._chat_listbox.grab_focus()
         elif self._message_entry.has_focus():
             self._chat_listbox.grab_focus()
         return True
+
+    def _on_voice_recording_shortcut(self, *args) -> bool:
+        """Handle Ctrl+Shift+R for voice recording."""
+        if not self._current_dialog:
+            self._announcer.announce("No chat selected")
+            return True
+
+        handled = self._voice_recorder.toggle_recording_shortcut()
+        if handled and self._voice_recorder.is_in_review:
+            self._announcer.announce("Voice recording ready to review")
+        elif handled and self._voice_recorder.is_recording:
+            self._announcer.announce("Recording voice message")
+        return handled
 
     def _on_load_older_messages_shortcut(self, *args) -> bool:
         """Handle the Page Up shortcut for loading older messages."""
