@@ -2384,7 +2384,6 @@ class MainWindow(Gtk.ApplicationWindow):
         now = time.monotonic()
 
         chat_state = self._typing_activity_state.setdefault(chat_id, {})
-        previous_summary = self._last_typing_summary.get(chat_id, "")
 
         # Expire stale entries first so summaries stay honest.
         expired_user_ids = [
@@ -2394,6 +2393,11 @@ class MainWindow(Gtk.ApplicationWindow):
         ]
         for active_user_id in expired_user_ids:
             chat_state.pop(active_user_id, None)
+
+        # Compare against the currently active summary after pruning stale state,
+        # not the last announced summary from some earlier moment.
+        previous_summary = self._format_typing_summary(chat_state)
+        self._last_typing_summary[chat_id] = previous_summary
 
         sender_name = self._get_entity_name(user)
 
