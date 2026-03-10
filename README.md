@@ -1,18 +1,24 @@
 # AccessGram
 
-An accessible Telegram client for Linux, designed to work with screen readers like Orca.
+An accessible Telegram client for Linux, designed to work well with screen readers like Orca.
 
 ## Features
 
 - Full keyboard navigation and screen reader support
 - Private chats, groups, and channels
 - Send and receive text messages
+- Multi-line message composer with `Enter` to send and `Shift+Enter` for a new line
 - Voice message recording and playback
+- Keyboard shortcut flow for voice messages with optional review-before-send behaviour
 - File uploads and downloads
 - Search for users, groups, and channels
+- View user profiles with keyboard-focusable, selectable profile fields
 - Mute/unmute chats
 - Message reply support with context display
 - Read receipts (sent/seen status)
+- Configurable sound effects with bundled Telegram-style defaults
+- Current-chat typing / recording / uploading announcements for screen reader users
+- Load older messages on demand instead of being limited to the first loaded page
 
 ## Installation
 
@@ -59,10 +65,23 @@ pip install -e .
 | `Ctrl+N` | Search |
 | `Ctrl+F` | Filter chat list |
 | `Ctrl+Q` | Quit |
-| `Escape` | Go back |
+| `Ctrl+Shift+R` | Start/stop voice recording in the current chat |
+| `Page Up` | Load older messages in the current chat |
+| `Escape` | Go back / cancel active voice recording |
 | `Enter` | Send message / activate |
+| `Shift+Enter` | Insert a new line in the message composer |
 | `Tab` | Navigate between areas |
 | `Arrow Keys` | Navigate within lists |
+
+## Accessibility and Preferences Notes
+
+- Typing activity announcements are limited to the currently open chat to avoid screen reader spam.
+- Typing activity timeout can be adjusted in Preferences.
+- Voice recording shortcut behaviour can be configured in Preferences:
+  - stop and review before sending
+  - stop and send immediately
+- Sound effects can be previewed, customised per event, or reset back to the bundled defaults.
+- Profile fields such as bio, phone number, and username are keyboard-focusable and selectable for easier review and copying.
 
 ## License
 
