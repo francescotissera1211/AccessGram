@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import gi
@@ -1503,11 +1504,20 @@ class MainWindow(Gtk.ApplicationWindow):
             self._voice_recorder.cancel_recording()
             return True
 
-        if self._chat_filter.has_focus():
+        if self._chat_filter.has_focus() and self._chat_filter.get_text():
             self._chat_filter.set_text("")
             self._chat_listbox.grab_focus()
-        elif self._message_entry.has_focus():
+            return True
+
+        if self._chat_view.get_visible() and self._current_dialog:
+            self._close_current_chat()
             self._chat_listbox.grab_focus()
+            self._announcer.announce("Closed chat")
+            return True
+
+        if self._chat_filter.has_focus():
+            self._chat_listbox.grab_focus()
+
         return True
 
     def _on_voice_recording_shortcut(self, *args) -> bool:
@@ -1601,6 +1611,64 @@ class MainWindow(Gtk.ApplicationWindow):
         logger.info("Loaded %d dialogs", len(self._dialogs))
         self._announcer.announce(f"Loaded {len(self._dialogs)} conversations")
 
+    def _create_dialog_stub(
+        self,
+        entity: Any,
+        message: Any = None,
+        unread_count: int = 0,
+    ) -> Any:
+        """Create a lightweight dialog-like object for chats not yet in the list."""
+        return SimpleNamespace(
+            entity=entity,
+            id=getattr(entity, "id", 0),
+            name=self._get_entity_name(entity),
+            message=message,
+            unread_count=unread_count,
+            dialog=SimpleNamespace(read_outbox_max_id=0, notify_settings=None),
+        )
+
+    def _upsert_dialog(self, dialog: Any, move_to_top: bool = False) -> None:
+        """Insert or update a dialog row in the chat list."""
+        dialog_id = getattr(dialog, "id", None)
+        if dialog_id is None:
+            return
+
+        row = self._dialog_rows.get(dialog_id)
+        replaced = False
+        for index, existing_dialog in enumerate(self._dialogs):
+            if existing_dialog.id == dialog_id:
+                self._dialogs[index] = dialog
+                replaced = True
+                break
+
+        if row:
+            row.update_dialog(dialog)
+        else:
+            muted = dialog_id in self._muted_chats
+            row = ChatRow(dialog, muted=muted, client=self._client)
+
+            filter_text = self._chat_filter.get_text().lower().strip()
+            if filter_text:
+                row.set_visible(filter_text in (dialog.name or "").lower())
+
+            if move_to_top:
+                self._chat_listbox.prepend(row)
+            else:
+                self._chat_listbox.append(row)
+            self._dialog_rows[dialog_id] = row
+
+        if not replaced:
+            if move_to_top:
+                self._dialogs.insert(0, dialog)
+            else:
+                self._dialogs.append(dialog)
+
+        if self._current_dialog and getattr(self._current_dialog, "id", None) == dialog_id:
+            self._current_dialog = dialog
+
+        if move_to_top:
+            self._move_dialog_to_top(dialog_id)
+
     def _on_filter_changed(self, entry: Gtk.SearchEntry) -> None:
         """Handle chat filter text change."""
         filter_text = entry.get_text().lower()
@@ -1665,6 +1733,32 @@ class MainWindow(Gtk.ApplicationWindow):
                 [f"Messages in {self._current_dialog.name}"],
             )
 
+    def _close_current_chat(self) -> None:
+        """Return the window to its no-chat-selected state."""
+        self._current_dialog = None
+        self._clear_reply()
+        self._clear_edit()
+        self._set_message_entry_text("")
+        self._message_entry.set_sensitive(True)
+        self._message_rows.clear()
+        self._oldest_loaded_message_id = None
+        self._history_exhausted = False
+        self._loading_older_messages = False
+        self._typing_activity_state.clear()
+        self._last_typing_summary.clear()
+        self._update_load_older_button_state()
+
+        while True:
+            row = self._messages_listbox.get_first_child()
+            if row is None:
+                break
+            self._messages_listbox.remove(row)
+
+        self._chat_listbox.select_row(None)
+        self._placeholder.set_visible(True)
+        self._chat_view.set_visible(False)
+        self._chat_title.set_label("")
+
     async def _load_messages(self) -> None:
         """Load messages for current chat."""
         if not self._current_dialog:
@@ -1697,7 +1791,11 @@ class MainWindow(Gtk.ApplicationWindow):
             self._history_exhausted = len(messages) < self._config.max_messages_to_load
 
             # Get the read_outbox_max_id to determine which outgoing messages have been read
-            read_outbox_max_id = getattr(self._current_dialog.dialog, "read_outbox_max_id", 0)
+            read_outbox_max_id = getattr(
+                getattr(self._current_dialog, "dialog", None),
+                "read_outbox_max_id",
+                0,
+            )
 
             # Add in chronological order (oldest first)
             for message in reversed(messages):
@@ -2027,16 +2125,12 @@ class MainWindow(Gtk.ApplicationWindow):
         # Add message to list
         row = MessageRow(message, self._media_manager, self._client)
         self._messages_listbox.append(row)
+        self._track_message_row(row, message)
 
         # Update the dialog in the chat list
         if self._current_dialog:
             self._current_dialog.message = message
-            dialog_row = self._dialog_rows.get(self._current_dialog.id)
-            if dialog_row:
-                dialog_row.update_dialog(self._current_dialog)
-
-            # Move dialog to top of list
-            self._move_dialog_to_top(self._current_dialog.id)
+            self._upsert_dialog(self._current_dialog, move_to_top=True)
 
         self._sound_effects.play(SoundEvent.MESSAGE_SENT)
 
@@ -2059,30 +2153,56 @@ class MainWindow(Gtk.ApplicationWindow):
         chat_id = event.chat_id
 
         # Check if this is the currently open chat
-        is_current_chat = self._current_dialog and self._current_dialog.id == chat_id
+        is_current_chat = bool(self._current_dialog and self._current_dialog.id == chat_id)
+        dialog_exists = chat_id is not None and any(dialog.id == chat_id for dialog in self._dialogs)
 
         # Update dialog in list
         def update_dialog_list():
             for dialog in self._dialogs:
                 if dialog.id == chat_id:
-                    # Update last message
                     dialog.message = message
 
                     # Increment unread count if not current chat and not our own message
                     if not is_current_chat and not message.out:
                         dialog.unread_count = getattr(dialog, "unread_count", 0) + 1
 
-                    # Update the row
-                    row = self._dialog_rows.get(dialog.id)
-                    if row:
-                        row.update_dialog(dialog)
-
-                    # Move to top of list
-                    self._move_dialog_to_top(chat_id)
+                    self._upsert_dialog(dialog, move_to_top=True)
                     break
             return False  # Don't repeat
 
         GLib.idle_add(update_dialog_list)
+
+        async def ensure_missing_dialog() -> None:
+            if chat_id is None or dialog_exists or chat_id in self._dialog_rows:
+                return
+
+            entity = None
+            try:
+                entity = await message.get_chat()
+            except Exception as e:
+                logger.debug("Could not fetch chat entity for new dialog: %s", e)
+
+            if entity is None and not message.out:
+                try:
+                    entity = await message.get_sender()
+                except Exception as e:
+                    logger.debug("Could not fetch sender entity for new dialog: %s", e)
+
+            if entity is None:
+                return
+
+            unread_count = 0 if is_current_chat or message.out else 1
+            dialog = self._create_dialog_stub(entity, message=message, unread_count=unread_count)
+
+            def add_dialog() -> bool:
+                if chat_id not in self._dialog_rows:
+                    self._upsert_dialog(dialog, move_to_top=True)
+                return False
+
+            GLib.idle_add(add_dialog)
+
+        if chat_id is not None and not dialog_exists:
+            run_async(ensure_missing_dialog())
 
         # Send system notification for incoming messages in unmuted chats
         if chat_id is not None and not message.out and chat_id not in self._muted_chats:
@@ -2468,37 +2588,11 @@ class MainWindow(Gtk.ApplicationWindow):
 
     async def _start_conversation(self, entity: Any) -> None:
         """Start a new conversation with an entity."""
-
-        # Open the chat view for this entity directly
-        # Create a fake dialog-like object for UI purposes
-        class PseudoDialog:
-            def __init__(self, ent):
-                self.entity = ent
-                self.id = getattr(ent, "id", 0)
-                self.name = self._get_name(ent)
-                self.message = None
-                self.unread_count = 0
-
-            def _get_name(self, ent):
-                if hasattr(ent, "first_name"):
-                    name = ent.first_name or ""
-                    if ent.last_name:
-                        name += " " + ent.last_name
-                    return name or "Unknown"
-                elif hasattr(ent, "title"):
-                    return ent.title or "Unknown"
-                return "Unknown"
-
-        pseudo_dialog = PseudoDialog(entity)
+        pseudo_dialog = self._create_dialog_stub(entity)
 
         # Set this as current dialog and show the chat view
         self._current_dialog = pseudo_dialog
-
-        # Show chat view
-        self._placeholder.set_visible(False)
-        self._chat_view.set_visible(True)
-        self._chat_title.set_label(pseudo_dialog.name)
-        self._chat_title.add_css_class("heading")
+        self._show_chat_view()
 
         # Clear existing messages
         while True:
@@ -2506,14 +2600,25 @@ class MainWindow(Gtk.ApplicationWindow):
             if row is None:
                 break
             self._messages_listbox.remove(row)
+        self._message_rows.clear()
 
         # Try to load any existing messages
         messages = await self._client.get_messages(entity, limit=self._config.max_messages_to_load)
+
+        if messages:
+            pseudo_dialog.message = messages[0]
+
+            def add_pseudo_dialog() -> bool:
+                self._upsert_dialog(pseudo_dialog, move_to_top=True)
+                return False
+
+            GLib.idle_add(add_pseudo_dialog)
 
         for message in reversed(messages):
             if message.text or message.media:
                 row = MessageRow(message, self._media_manager, self._client)
                 self._messages_listbox.append(row)
+                self._track_message_row(row, message)
 
         # Focus message entry
         self._message_entry.grab_focus()
