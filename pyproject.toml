@@ -3,7 +3,8 @@ name = "accessgram"
 version = "0.1.0"
 description = "An accessible Telegram client for Linux"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
     {name = "Harley"}
@@ -13,7 +14,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: X11 Applications :: GTK",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -38,9 +38,6 @@ dev = [
 
 [project.scripts]
 accessgram = "accessgram.__main__:main"
-
-[project.gui-scripts]
-accessgram-gui = "accessgram.__main__:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
