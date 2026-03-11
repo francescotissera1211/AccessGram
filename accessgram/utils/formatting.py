@@ -99,6 +99,27 @@ def truncate_text(text: str, max_length: int = 50, suffix: str = "...") -> str:
     return text[: max_length - len(suffix)] + suffix
 
 
+def get_voice_message_duration(message: Any) -> int:
+    """Get a voice message duration in seconds from any available metadata."""
+    file_info = getattr(message, "file", None)
+    file_duration = getattr(file_info, "duration", None)
+    if isinstance(file_duration, (int, float)) and file_duration > 0:
+        return int(file_duration)
+
+    for document in (getattr(message, "voice", None), getattr(message, "document", None)):
+        attributes = getattr(document, "attributes", None)
+        if not attributes:
+            continue
+
+        for attr in attributes:
+            duration = getattr(attr, "duration", None)
+            is_voice = getattr(attr, "voice", False)
+            if isinstance(duration, (int, float)) and duration > 0 and is_voice:
+                return int(duration)
+
+    return 0
+
+
 def format_message_preview(message: Any) -> str:
     """Format a message for preview display.
 
@@ -118,12 +139,8 @@ def format_message_preview(message: Any) -> str:
         return "Video"
 
     if message.voice:
-        duration = ""
-        if message.voice.attributes:
-            for attr in message.voice.attributes:
-                if hasattr(attr, "duration"):
-                    duration = format_duration(attr.duration)
-                    break
+        duration_seconds = get_voice_message_duration(message)
+        duration = format_duration(duration_seconds) if duration_seconds > 0 else ""
         return f"Voice message {duration}".strip()
 
     if message.audio:

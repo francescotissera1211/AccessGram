@@ -17,6 +17,7 @@ from gi.repository import GLib, Gtk
 from accessgram.audio.player import AudioPlayer, PlayerState, get_player
 from accessgram.core.media import MediaManager
 from accessgram.utils.async_bridge import create_task_with_callback
+from accessgram.utils.formatting import get_voice_message_duration
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +48,7 @@ class VoicePlayerWidget(Gtk.Box):
 
     def _get_duration(self) -> int:
         """Get voice message duration in seconds."""
-        if self.message.voice and self.message.voice.attributes:
-            for attr in self.message.voice.attributes:
-                if hasattr(attr, "duration"):
-                    return attr.duration
-        return 0
+        return get_voice_message_duration(self.message)
 
     def _format_time(self, seconds: float) -> str:
         """Format seconds as M:SS."""

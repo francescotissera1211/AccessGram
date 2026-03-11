@@ -16,7 +16,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Gio, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, GObject, Gtk
 
 from accessgram.accessibility.announcer import ScreenReaderAnnouncer
 from accessgram.audio.sound_effects import SoundEvent, get_sound_effects
@@ -29,7 +29,7 @@ from accessgram.ui.widgets.media_download import MediaDownloadWidget
 from accessgram.ui.widgets.voice_player import VoicePlayerWidget
 from accessgram.ui.widgets.voice_recorder import VoiceRecorderWidget
 from accessgram.utils.async_bridge import create_task_with_callback, run_async
-from accessgram.utils.config import Config
+from accessgram.utils.config import Config, get_cache_dir
 from accessgram.utils.formatting import format_message_preview, truncate_text
 
 logger = logging.getLogger(__name__)
@@ -707,6 +707,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._chat_session_token = 0
         self._typing_activity_state: dict[int, dict[int, tuple[str, str, float]]] = {}
         self._last_typing_summary: dict[int, str] = {}
+        self._pending_attachments: list[Path] = []
 
         # Media manager for downloads/uploads
         self._media_manager = MediaManager(client)
@@ -959,6 +960,37 @@ class MainWindow(Gtk.ApplicationWindow):
         compose_box.set_margin_top(8)
         compose_box.set_margin_bottom(12)
 
+        self._attachments_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self._attachments_box.set_visible(False)
+
+        attachments_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        attachments_icon = Gtk.Image.new_from_icon_name("mail-attachment-symbolic")
+        attachments_header.append(attachments_icon)
+
+        self._attachments_label = Gtk.Label(label="Pending attachments")
+        self._attachments_label.set_xalign(0)
+        self._attachments_label.add_css_class("dim-label")
+        self._attachments_label.add_css_class("caption")
+        self._attachments_label.set_hexpand(True)
+        attachments_header.append(self._attachments_label)
+
+        self._clear_attachments_button = Gtk.Button()
+        self._clear_attachments_button.set_icon_name("edit-clear-symbolic")
+        self._clear_attachments_button.add_css_class("flat")
+        self._clear_attachments_button.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            ["Clear pending attachments"],
+        )
+        self._clear_attachments_button.connect("clicked", self._on_clear_attachments_clicked)
+        self._add_attachment_navigation_controller(self._clear_attachments_button)
+        attachments_header.append(self._clear_attachments_button)
+
+        self._attachments_box.append(attachments_header)
+
+        self._attachments_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._attachments_box.append(self._attachments_list)
+        compose_box.append(self._attachments_box)
+
         message_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         message_row.set_hexpand(True)
 
@@ -987,6 +1019,7 @@ class MainWindow(Gtk.ApplicationWindow):
         message_key_controller = Gtk.EventControllerKey()
         message_key_controller.connect("key-pressed", self._on_message_entry_key_pressed)
         self._message_entry.add_controller(message_key_controller)
+        self._message_entry.connect("paste-clipboard", self._on_message_entry_paste_clipboard)
         message_entry_scroll.set_child(self._message_entry)
         message_row.append(message_entry_scroll)
         compose_box.append(message_row)
@@ -1013,15 +1046,15 @@ class MainWindow(Gtk.ApplicationWindow):
         controls_row.append(self._voice_recorder)
 
         # Send button
-        send_button = Gtk.Button()
-        send_button.set_icon_name("document-send-symbolic")
-        send_button.add_css_class("suggested-action")
-        send_button.update_property(
+        self._send_button = Gtk.Button()
+        self._send_button.set_icon_name("document-send-symbolic")
+        self._send_button.add_css_class("suggested-action")
+        self._send_button.update_property(
             [Gtk.AccessibleProperty.LABEL],
             ["Send message"],
         )
-        send_button.connect("clicked", self._on_send_message)
-        controls_row.append(send_button)
+        self._send_button.connect("clicked", self._on_send_message)
+        controls_row.append(self._send_button)
         compose_box.append(controls_row)
 
         self._chat_view.append(compose_box)
@@ -1147,13 +1180,101 @@ class MainWindow(Gtk.ApplicationWindow):
         Returns:
             Tuple of (next_widget, prev_widget).
         """
-        # Tab forward goes to the compose box
-        next_widget = self._message_entry
+        # Tab forward goes to pending attachments first when present, otherwise the compose box
+        next_widget = self._get_first_compose_focus_widget()
 
         # Tab backward goes to the history button when available
         prev_widget = self._load_older_button if self._load_older_button.get_sensitive() else self._chat_listbox
 
         return next_widget, prev_widget
+
+    def _get_first_compose_focus_widget(self) -> Gtk.Widget | None:
+        """Get the first focusable widget in the compose area."""
+        if self._pending_attachments:
+            return self._clear_attachments_button
+        return self._message_entry
+
+    def _get_attachment_remove_buttons(self) -> list[Gtk.Button]:
+        """Get attachment remove buttons in display order."""
+        buttons: list[Gtk.Button] = []
+        row = self._attachments_list.get_first_child()
+        while row is not None:
+            button = row.get_last_child()
+            if isinstance(button, Gtk.Button):
+                buttons.append(button)
+            row = row.get_next_sibling()
+        return buttons
+
+    def _get_last_attachment_focus_widget(self) -> Gtk.Widget | None:
+        """Get the last focusable widget in the pending attachments area."""
+        buttons = self._get_attachment_remove_buttons()
+        if buttons:
+            return buttons[-1]
+        if self._pending_attachments:
+            return self._clear_attachments_button
+        return None
+
+    def _focus_previous_message_target(self) -> bool:
+        """Move focus from compose controls back toward the message list."""
+        selected_row = self._messages_listbox.get_selected_row()
+
+        if selected_row and isinstance(selected_row, MessageRow):
+            buttons_widget = selected_row._inline_buttons_widget
+            if buttons_widget and buttons_widget._buttons:
+                buttons_widget._buttons[-1].grab_focus()
+                return True
+
+            selected_row.grab_focus()
+            return True
+
+        last_row = self._messages_listbox.get_last_child()
+        if last_row and isinstance(last_row, Gtk.ListBoxRow):
+            self._messages_listbox.select_row(last_row)
+            last_row.grab_focus()
+            return True
+
+        self._chat_listbox.grab_focus()
+        return True
+
+    def _add_attachment_navigation_controller(self, widget: Gtk.Widget) -> None:
+        """Install explicit Tab navigation for attachment controls."""
+        controller = Gtk.EventControllerKey()
+
+        def on_key_pressed(ctrl, keyval, keycode, state):
+            from gi.repository import Gdk
+
+            remove_buttons = self._get_attachment_remove_buttons()
+            current_index = remove_buttons.index(widget) if widget in remove_buttons else -1
+
+            if keyval == Gdk.KEY_Tab:
+                if widget == self._clear_attachments_button:
+                    if remove_buttons:
+                        remove_buttons[0].grab_focus()
+                    else:
+                        self._message_entry.grab_focus()
+                    return True
+
+                if current_index != -1:
+                    if current_index < len(remove_buttons) - 1:
+                        remove_buttons[current_index + 1].grab_focus()
+                    else:
+                        self._message_entry.grab_focus()
+                    return True
+
+            if keyval == Gdk.KEY_ISO_Left_Tab:
+                if widget == self._clear_attachments_button:
+                    return self._focus_previous_message_target()
+
+                if current_index > 0:
+                    remove_buttons[current_index - 1].grab_focus()
+                else:
+                    self._clear_attachments_button.grab_focus()
+                return True
+
+            return False
+
+        controller.connect("key-pressed", on_key_pressed)
+        widget.add_controller(controller)
 
     def _setup_messages_list_tab_behavior(self) -> None:
         """Set up Tab key behavior for the messages listbox.
@@ -1190,8 +1311,10 @@ class MainWindow(Gtk.ApplicationWindow):
                             buttons[current_idx + 1].grab_focus()
                             return True
                         # On last button, go to the compose box
-                        self._message_entry.grab_focus()
-                        return True
+                        next_widget = self._get_first_compose_focus_widget()
+                        if next_widget:
+                            next_widget.grab_focus()
+                            return True
 
                     # Shift+Tab
                     elif keyval == Gdk.KEY_ISO_Left_Tab:
@@ -1219,8 +1342,10 @@ class MainWindow(Gtk.ApplicationWindow):
                     self._chat_listbox.grab_focus()
                 return True
             elif keyval == Gdk.KEY_Tab:
-                self._message_entry.grab_focus()
-                return True
+                next_widget = self._get_first_compose_focus_widget()
+                if next_widget:
+                    next_widget.grab_focus()
+                    return True
 
             return False
 
@@ -1741,8 +1866,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._current_dialog = None
         self._clear_reply()
         self._clear_edit()
+        self._clear_pending_attachments()
         self._set_message_entry_text("")
-        self._message_entry.set_sensitive(True)
+        self._set_compose_controls_sensitive(True)
         self._message_rows.clear()
         self._oldest_loaded_message_id = None
         self._history_exhausted = False
@@ -2003,6 +2129,234 @@ class MainWindow(Gtk.ApplicationWindow):
         """Replace the current compose text."""
         self._message_entry.get_buffer().set_text(text)
 
+    def _set_compose_controls_sensitive(self, sensitive: bool) -> None:
+        """Enable or disable compose controls during send operations."""
+        self._message_entry.set_sensitive(sensitive)
+        self._attach_button.set_sensitive(sensitive)
+        self._send_button.set_sensitive(sensitive)
+        self._voice_recorder.set_sensitive(sensitive)
+
+    def _refresh_pending_attachments(self) -> None:
+        """Refresh the pending attachments UI."""
+        while True:
+            child = self._attachments_list.get_first_child()
+            if child is None:
+                break
+            self._attachments_list.remove(child)
+
+        count = len(self._pending_attachments)
+        self._attachments_box.set_visible(count > 0)
+        if count == 0:
+            return
+
+        self._attachments_label.set_label(
+            f"Pending attachment{'s' if count != 1 else ''}: {count}"
+        )
+
+        for index, file_path in enumerate(self._pending_attachments):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+            icon_name = "image-x-generic-symbolic" if file_path.suffix.lower() in {
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".gif",
+                ".webp",
+                ".bmp",
+                ".tiff",
+            } else "text-x-generic-symbolic"
+            row.append(Gtk.Image.new_from_icon_name(icon_name))
+
+            label = Gtk.Label(label=file_path.name)
+            label.set_xalign(0)
+            label.set_ellipsize(True)
+            label.set_hexpand(True)
+            row.append(label)
+
+            remove_button = Gtk.Button()
+            remove_button.set_icon_name("window-close-symbolic")
+            remove_button.add_css_class("flat")
+            remove_button.update_property(
+                [Gtk.AccessibleProperty.LABEL],
+                [f"Remove attachment {file_path.name}"],
+            )
+            remove_button.connect(
+                "clicked",
+                lambda _button, attachment_index=index: self._remove_pending_attachment(
+                    attachment_index
+                ),
+            )
+            self._add_attachment_navigation_controller(remove_button)
+            row.append(remove_button)
+
+            self._attachments_list.append(row)
+
+    def _queue_pending_attachments(
+        self,
+        file_paths: list[Path],
+        announce: bool = True,
+    ) -> None:
+        """Add one or more files to the pending attachment list."""
+        if not file_paths:
+            return
+
+        if self._editing_message:
+            self._announcer.announce("Finish editing before adding attachments")
+            return
+
+        valid_paths = [Path(file_path) for file_path in file_paths if Path(file_path).exists()]
+        if not valid_paths:
+            self._announcer.announce("No valid files to attach")
+            return
+
+        self._pending_attachments.extend(valid_paths)
+        self._refresh_pending_attachments()
+
+        if announce:
+            if len(valid_paths) == 1:
+                self._announcer.announce(f"Attached {valid_paths[0].name}")
+            else:
+                self._announcer.announce(f"Attached {len(valid_paths)} files")
+
+    def _remove_pending_attachment(self, index: int) -> None:
+        """Remove one pending attachment by index."""
+        if index < 0 or index >= len(self._pending_attachments):
+            return
+
+        removed = self._pending_attachments.pop(index)
+        self._refresh_pending_attachments()
+        self._announcer.announce(f"Removed {removed.name}")
+
+    def _clear_pending_attachments(self, announce: bool = False) -> None:
+        """Clear all pending attachments."""
+        if not self._pending_attachments:
+            return
+
+        self._pending_attachments.clear()
+        self._refresh_pending_attachments()
+        if announce:
+            self._announcer.announce("Cleared pending attachments")
+
+    def _on_clear_attachments_clicked(self, button: Gtk.Button) -> None:
+        """Clear all pending attachments from the compose area."""
+        self._clear_pending_attachments(announce=True)
+
+    def _on_message_entry_paste_clipboard(self, text_view: Gtk.TextView) -> None:
+        """Handle clipboard paste for files and images before falling back to text."""
+        clipboard = text_view.get_clipboard()
+        formats = clipboard.get_formats()
+
+        if not self._current_dialog:
+            if formats.contain_gtype(Gdk.FileList.__gtype__) or formats.contain_gtype(
+                Gdk.Texture.__gtype__
+            ):
+                GObject.signal_stop_emission_by_name(text_view, "paste-clipboard")
+                self._announcer.announce("No chat selected")
+            return
+
+        if formats.contain_gtype(Gdk.FileList.__gtype__):
+            GObject.signal_stop_emission_by_name(text_view, "paste-clipboard")
+            clipboard.read_value_async(
+                Gdk.FileList.__gtype__,
+                GLib.PRIORITY_DEFAULT,
+                None,
+                self._on_clipboard_file_list_read,
+                None,
+            )
+            return
+
+        if formats.contain_gtype(Gdk.Texture.__gtype__):
+            GObject.signal_stop_emission_by_name(text_view, "paste-clipboard")
+            clipboard.read_texture_async(
+                None,
+                self._on_clipboard_texture_read,
+                None,
+            )
+
+    def _on_clipboard_file_list_read(
+        self,
+        clipboard: Gdk.Clipboard,
+        result: Gio.AsyncResult,
+        user_data: Any = None,
+    ) -> None:
+        """Send pasted files from the clipboard."""
+        try:
+            value = clipboard.read_value_finish(result)
+            file_list = value.get_boxed() if hasattr(value, "get_boxed") else value
+        except GLib.Error as error:
+            self._announcer.announce(f"Failed to read pasted files: {error.message}")
+            logger.exception("Failed to read pasted files from clipboard: %s", error)
+            return
+
+        if not file_list:
+            self._announcer.announce("Clipboard did not contain any files")
+            return
+
+        file_paths: list[Path] = []
+        skipped_non_local = 0
+
+        for file in file_list.get_files():
+            file_path = file.get_path()
+            if file_path:
+                file_paths.append(Path(file_path))
+            else:
+                skipped_non_local += 1
+
+        if not file_paths:
+            if skipped_non_local:
+                self._announcer.announce("Pasted files must be local files")
+            else:
+                self._announcer.announce("Clipboard did not contain any files")
+            return
+
+        if skipped_non_local:
+            self._announcer.announce(
+                f"Attached {len(file_paths)} pasted file"
+                f"{'s' if len(file_paths) != 1 else ''}; skipped {skipped_non_local} non-local item"
+                f"{'s' if skipped_non_local != 1 else ''}"
+            )
+            self._queue_pending_attachments(file_paths, announce=False)
+            return
+
+        self._queue_pending_attachments(file_paths, announce=False)
+        if len(file_paths) == 1:
+            self._announcer.announce(f"Attached {file_paths[0].name}")
+        else:
+            self._announcer.announce(f"Attached {len(file_paths)} pasted files")
+
+    def _on_clipboard_texture_read(
+        self,
+        clipboard: Gdk.Clipboard,
+        result: Gio.AsyncResult,
+        user_data: Any = None,
+    ) -> None:
+        """Send a pasted image from the clipboard."""
+        try:
+            texture = clipboard.read_texture_finish(result)
+        except GLib.Error as error:
+            self._announcer.announce(f"Failed to read pasted image: {error.message}")
+            logger.exception("Failed to read pasted image from clipboard: %s", error)
+            return
+
+        if not texture:
+            self._announcer.announce("Clipboard did not contain an image")
+            return
+
+        clipboard_dir = get_cache_dir() / "clipboard"
+        clipboard_dir.mkdir(parents=True, exist_ok=True)
+        image_path = clipboard_dir / f"pasted-image-{int(time.time() * 1000)}.png"
+
+        try:
+            if not texture.save_to_png(str(image_path)):
+                raise RuntimeError("GTK could not save the pasted image")
+        except Exception as error:
+            self._announcer.announce(f"Failed to save pasted image: {error}")
+            logger.exception("Failed to save pasted image to %s: %s", image_path, error)
+            return
+
+        self._queue_pending_attachments([image_path], announce=False)
+        self._announcer.announce("Attached pasted image")
+
     def _on_message_entry_key_pressed(
         self,
         controller: Gtk.EventControllerKey,
@@ -2025,50 +2379,78 @@ class MainWindow(Gtk.ApplicationWindow):
             return True
 
         if keyval == Gdk.KEY_ISO_Left_Tab:
-            selected_row = self._messages_listbox.get_selected_row()
-
-            if selected_row and isinstance(selected_row, MessageRow):
-                buttons_widget = selected_row._inline_buttons_widget
-                if buttons_widget and buttons_widget._buttons:
-                    buttons_widget._buttons[-1].grab_focus()
-                    return True
-
-                selected_row.grab_focus()
+            last_attachment_widget = self._get_last_attachment_focus_widget()
+            if last_attachment_widget:
+                last_attachment_widget.grab_focus()
                 return True
 
-            last_row = self._messages_listbox.get_last_child()
-            if last_row and isinstance(last_row, Gtk.ListBoxRow):
-                self._messages_listbox.select_row(last_row)
-                last_row.grab_focus()
-                return True
-
-            self._chat_listbox.grab_focus()
-            return True
+            return self._focus_previous_message_target()
 
         return False
 
     def _on_send_message(self, widget: Gtk.Widget) -> None:
         """Handle send message action."""
+        if not self._current_dialog:
+            return
+
         text = self._get_message_entry_text().strip()
-        if not text or not self._current_dialog:
+        has_attachments = bool(self._pending_attachments)
+        if not text and not has_attachments:
             return
 
         # Check if we're in edit mode
         if self._editing_message:
+            if has_attachments:
+                self._announcer.announce("Finish editing before sending attachments")
+                return
             self._do_edit_message(text)
             return
 
         self._set_message_entry_text("")
-        self._message_entry.set_sensitive(False)
+        self._set_compose_controls_sensitive(False)
 
         # Get reply_to message ID if replying
         reply_to = self._reply_to_message.id if self._reply_to_message else None
+
+        if has_attachments:
+            create_task_with_callback(
+                self._send_pending_attachments_async(
+                    self._current_dialog.entity,
+                    list(self._pending_attachments),
+                    text,
+                    reply_to,
+                ),
+                self._on_pending_attachments_sent,
+                self._on_pending_attachments_error,
+            )
+            return
 
         create_task_with_callback(
             self._send_message_async(self._current_dialog.entity, text, reply_to),
             self._on_message_sent,
             self._on_message_error,
         )
+
+    async def _send_pending_attachments_async(
+        self,
+        entity: Any,
+        file_paths: list[Path],
+        caption: str,
+        reply_to: int | None,
+    ) -> list[Any]:
+        """Send pending attachments, using text as the first caption if present."""
+        messages = []
+        for index, file_path in enumerate(file_paths):
+            messages.append(
+                await self._media_manager.upload_file(
+                    entity,
+                    file_path,
+                    caption=caption if index == 0 else "",
+                    reply_to=reply_to if index == 0 else None,
+                    progress_callback=self._on_upload_progress,
+                )
+            )
+        return messages
 
     def _do_edit_message(self, new_text: str) -> None:
         """Send the edited message."""
@@ -2083,7 +2465,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
 
         self._set_message_entry_text("")
-        self._message_entry.set_sensitive(False)
+        self._set_compose_controls_sensitive(False)
 
         create_task_with_callback(
             self._client.edit_message(
@@ -2097,7 +2479,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_message_edited(self, edited_message: Any) -> None:
         """Handle successful message edit."""
-        self._message_entry.set_sensitive(True)
+        self._set_compose_controls_sensitive(True)
         self._message_entry.grab_focus()
 
         original_message = self._editing_message
@@ -2121,7 +2503,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_edit_error(self, error: Exception) -> None:
         """Handle message edit error."""
-        self._message_entry.set_sensitive(True)
+        self._set_compose_controls_sensitive(True)
         self._announcer.announce(f"Failed to edit message: {error}")
         logger.exception("Failed to edit message: %s", error)
 
@@ -2134,7 +2516,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_message_sent(self, message: Any) -> None:
         """Handle successful message send."""
-        self._message_entry.set_sensitive(True)
+        self._set_compose_controls_sensitive(True)
         self._message_entry.grab_focus()
 
         # If this was a reply, attach the reply message before clearing
@@ -2159,9 +2541,44 @@ class MainWindow(Gtk.ApplicationWindow):
         if self._config.announce_sent_messages:
             self._announcer.announce("Message sent")
 
+    def _on_pending_attachments_sent(self, messages: list[Any]) -> None:
+        """Handle successful send of pending attachments."""
+        self._set_compose_controls_sensitive(True)
+        self._message_entry.grab_focus()
+
+        if not messages:
+            self._announcer.announce("Nothing was sent")
+            return
+
+        self._clear_pending_attachments()
+        self._clear_reply()
+
+        for message in messages:
+            row = MessageRow(message, self._media_manager, self._client)
+            self._messages_listbox.append(row)
+            self._track_message_row(row, message)
+
+        if self._current_dialog:
+            self._current_dialog.message = messages[-1]
+            self._upsert_dialog(self._current_dialog, move_to_top=True)
+
+        self._sound_effects.play(SoundEvent.MESSAGE_SENT)
+
+        if self._config.announce_sent_messages:
+            if len(messages) == 1:
+                self._announcer.announce("Attachment sent")
+            else:
+                self._announcer.announce(f"Sent {len(messages)} attachments")
+
+    def _on_pending_attachments_error(self, error: Exception) -> None:
+        """Handle pending attachment send error."""
+        self._set_compose_controls_sensitive(True)
+        self._announcer.announce(f"Failed to send attachments: {error}")
+        logger.exception("Failed to send pending attachments: %s", error)
+
     def _on_message_error(self, error: Exception) -> None:
         """Handle message send error."""
-        self._message_entry.set_sensitive(True)
+        self._set_compose_controls_sensitive(True)
         self._announcer.announce(f"Failed to send message: {error}")
         logger.exception("Failed to send message: %s", error)
 
@@ -2680,21 +3097,31 @@ class MainWindow(Gtk.ApplicationWindow):
             self._announcer.announce("No chat selected")
             return
 
+        if self._editing_message:
+            self._announcer.announce("Finish editing before adding attachments")
+            return
+
         # Create file dialog
         dialog = Gtk.FileDialog()
-        dialog.set_title("Select file to send")
+        dialog.set_title("Select file to attach")
         dialog.set_modal(True)
 
         # Open file chooser
-        dialog.open(self, None, self._on_file_selected)
+        dialog.open_multiple(self, None, self._on_file_selected)
 
     def _on_file_selected(self, dialog: Gtk.FileDialog, result: Any) -> None:
         """Handle file selection from dialog."""
         try:
-            file = dialog.open_finish(result)
-            if file:
-                file_path = Path(file.get_path())
-                self._send_file(file_path)
+            files = dialog.open_multiple_finish(result)
+            file_paths: list[Path] = []
+            for index in range(files.get_n_items()):
+                file = files.get_item(index)
+                if file:
+                    file_path = file.get_path()
+                    if file_path:
+                        file_paths.append(Path(file_path))
+
+            self._queue_pending_attachments(file_paths)
         except GLib.Error as e:
             # User cancelled or error
             if e.code != 2:  # Not "cancelled" error
@@ -2718,6 +3145,34 @@ class MainWindow(Gtk.ApplicationWindow):
             self._on_file_send_error,
         )
 
+    def _send_files(self, file_paths: list[Path]) -> None:
+        """Send one or more files to the current chat."""
+        if not file_paths or not self._current_dialog:
+            return
+
+        if len(file_paths) == 1:
+            self._send_file(file_paths[0])
+            return
+
+        create_task_with_callback(
+            self._send_files_async(self._current_dialog.entity, file_paths),
+            self._on_files_sent,
+            self._on_file_send_error,
+        )
+
+    async def _send_files_async(self, entity: Any, file_paths: list[Path]) -> list[Any]:
+        """Upload multiple files sequentially."""
+        messages = []
+        for file_path in file_paths:
+            messages.append(
+                await self._media_manager.upload_file(
+                    entity,
+                    file_path,
+                    progress_callback=self._on_upload_progress,
+                )
+            )
+        return messages
+
     def _on_upload_progress(self, current: int, total: int) -> None:
         """Handle upload progress."""
         # Could show a progress indicator in the UI
@@ -2728,9 +3183,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_file_sent(self, message: Any) -> None:
         """Handle successful file send."""
+        self._set_compose_controls_sensitive(True)
+
         # Add message to list
         row = MessageRow(message, self._media_manager, self._client)
         self._messages_listbox.append(row)
+        self._track_message_row(row, message)
 
         # Update the dialog in the chat list
         if self._current_dialog:
@@ -2740,11 +3198,35 @@ class MainWindow(Gtk.ApplicationWindow):
                 dialog_row.update_dialog(self._current_dialog)
             self._move_dialog_to_top(self._current_dialog.id)
 
+        self._sound_effects.play(SoundEvent.MESSAGE_SENT)
         self._announcer.announce("File sent")
+        self._message_entry.grab_focus()
+
+    def _on_files_sent(self, messages: list[Any]) -> None:
+        """Handle successful multi-file send."""
+        self._set_compose_controls_sensitive(True)
+        if not messages:
+            return
+
+        for message in messages:
+            row = MessageRow(message, self._media_manager, self._client)
+            self._messages_listbox.append(row)
+            self._track_message_row(row, message)
+
+        if self._current_dialog:
+            self._current_dialog.message = messages[-1]
+            dialog_row = self._dialog_rows.get(self._current_dialog.id)
+            if dialog_row:
+                dialog_row.update_dialog(self._current_dialog)
+            self._move_dialog_to_top(self._current_dialog.id)
+
+        self._sound_effects.play(SoundEvent.MESSAGE_SENT)
+        self._announcer.announce(f"Sent {len(messages)} files")
         self._message_entry.grab_focus()
 
     def _on_file_send_error(self, error: Exception) -> None:
         """Handle file send error."""
+        self._set_compose_controls_sensitive(True)
         self._announcer.announce(f"Failed to send file: {error}")
         logger.exception("Failed to send file: %s", error)
 
@@ -2754,6 +3236,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self._announcer.announce("No chat selected")
             return
 
+        self._set_compose_controls_sensitive(False)
         self._announcer.announce("Sending voice message")
 
         create_task_with_callback(
@@ -2768,14 +3251,18 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _on_voice_recording_cancelled(self) -> None:
         """Handle cancelled voice recording."""
+        self._set_compose_controls_sensitive(True)
         self._announcer.announce("Voice recording cancelled")
         self._message_entry.grab_focus()
 
     def _on_voice_sent(self, message: Any) -> None:
         """Handle successful voice message send."""
+        self._set_compose_controls_sensitive(True)
+
         # Add message to list
         row = MessageRow(message, self._media_manager, self._client)
         self._messages_listbox.append(row)
+        self._track_message_row(row, message)
 
         # Update the dialog in the chat list
         if self._current_dialog:
@@ -2785,11 +3272,13 @@ class MainWindow(Gtk.ApplicationWindow):
                 dialog_row.update_dialog(self._current_dialog)
             self._move_dialog_to_top(self._current_dialog.id)
 
+        self._sound_effects.play(SoundEvent.MESSAGE_SENT)
         self._announcer.announce("Voice message sent")
         self._message_entry.grab_focus()
 
     def _on_voice_send_error(self, error: Exception) -> None:
         """Handle voice message send error."""
+        self._set_compose_controls_sensitive(True)
         self._announcer.announce(f"Failed to send voice message: {error}")
         logger.exception("Failed to send voice message: %s", error)
 

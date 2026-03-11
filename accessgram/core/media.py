@@ -120,6 +120,7 @@ class MediaManager:
         chat: Any,
         file_path: Path,
         caption: str = "",
+        reply_to: int | None = None,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> Message:
         """Upload a file to a chat.
@@ -128,6 +129,7 @@ class MediaManager:
             chat: The chat entity to send to.
             file_path: Path to the file to upload.
             caption: Optional caption for the file.
+            reply_to: Optional message ID to reply to.
             progress_callback: Called with (uploaded_bytes, total_bytes).
 
         Returns:
@@ -144,6 +146,7 @@ class MediaManager:
                 chat,
                 str(file_path),
                 caption=caption,
+                reply_to=reply_to,
                 progress_callback=lambda current, total: self._on_progress(
                     0, current, total, progress_callback
                 ),
