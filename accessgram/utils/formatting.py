@@ -7,6 +7,8 @@ text content for display.
 from datetime import datetime, timedelta
 from typing import Any
 
+from telethon.tl import types as tl_types
+
 
 def format_timestamp(dt: datetime, include_date: bool = False) -> str:
     """Format a datetime for display.
@@ -99,6 +101,16 @@ def truncate_text(text: str, max_length: int = 50, suffix: str = "...") -> str:
     return text[: max_length - len(suffix)] + suffix
 
 
+def has_real_photo_attachment(message: Any) -> bool:
+    """Return whether a message contains an actual photo attachment."""
+    return isinstance(getattr(message, "media", None), tl_types.MessageMediaPhoto)
+
+
+def has_real_document_attachment(message: Any) -> bool:
+    """Return whether a message contains an actual document attachment."""
+    return isinstance(getattr(message, "media", None), tl_types.MessageMediaDocument)
+
+
 def get_voice_message_duration(message: Any) -> int:
     """Get a voice message duration in seconds from any available metadata."""
     file_info = getattr(message, "file", None)
@@ -132,21 +144,21 @@ def format_message_preview(message: Any) -> str:
     if message.text:
         return truncate_text(message.text)
 
-    if message.photo:
+    if has_real_photo_attachment(message):
         return "Photo"
 
-    if message.video:
+    if message.video and has_real_document_attachment(message):
         return "Video"
 
-    if message.voice:
+    if message.voice and has_real_document_attachment(message):
         duration_seconds = get_voice_message_duration(message)
         duration = format_duration(duration_seconds) if duration_seconds > 0 else ""
         return f"Voice message {duration}".strip()
 
-    if message.audio:
+    if message.audio and has_real_document_attachment(message):
         return "Audio"
 
-    if message.document:
+    if message.document and has_real_document_attachment(message):
         filename = "Document"
         if message.document.attributes:
             for attr in message.document.attributes:

@@ -5,6 +5,7 @@ and message view area.
 """
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -17,6 +18,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 
 from gi.repository import Gdk, Gio, GLib, GObject, Gtk
+from telethon.tl import types as tl_types
 
 from accessgram.accessibility.announcer import ScreenReaderAnnouncer
 from accessgram.audio.sound_effects import SoundEvent, get_sound_effects
@@ -33,6 +35,7 @@ from accessgram.utils.config import Config, get_cache_dir
 from accessgram.utils.formatting import format_message_preview, truncate_text
 
 logger = logging.getLogger(__name__)
+URL_PATTERN = re.compile(r"https?://[^\s<>()]+")
 
 
 class ChatRow(Gtk.ListBoxRow):
@@ -388,18 +391,7 @@ class MessageRow(Gtk.ListBoxRow):
             reply_header = f"Replying to {sender}"
 
             # Get preview
-            if reply_msg.text:
-                reply_preview = reply_msg.text[:40]
-                if len(reply_msg.text) > 40:
-                    reply_preview += "..."
-            elif reply_msg.voice:
-                reply_preview = "Voice message"
-            elif reply_msg.photo:
-                reply_preview = "Photo"
-            elif reply_msg.video:
-                reply_preview = "Video"
-            elif reply_msg.document:
-                reply_preview = "Document"
+            reply_preview = truncate_text(format_message_preview(reply_msg), 40)
 
         # Reply header label
         header_label = Gtk.Label(label=reply_header)
@@ -436,9 +428,44 @@ class MessageRow(Gtk.ListBoxRow):
                 return self.message.sender.title or "Unknown"
         return "Unknown"
 
+    def _is_real_photo_message(self) -> bool:
+        """Return whether this message contains an actual attached photo."""
+        return isinstance(getattr(self.message, "media", None), tl_types.MessageMediaPhoto)
+
+    def _is_real_document_message(self) -> bool:
+        """Return whether this message contains an actual attached document."""
+        return isinstance(getattr(self.message, "media", None), tl_types.MessageMediaDocument)
+
+    def _linkify_text(self, text: str) -> str:
+        """Convert plain URLs in message text to GTK label links."""
+        parts: list[str] = []
+        last_end = 0
+
+        for match in URL_PATTERN.finditer(text):
+            start, end = match.span()
+            url = match.group(0)
+            parts.append(GLib.markup_escape_text(text[last_end:start]))
+            escaped_url = GLib.markup_escape_text(url)
+            parts.append(f'<a href="{escaped_url}">{escaped_url}</a>')
+            last_end = end
+
+        parts.append(GLib.markup_escape_text(text[last_end:]))
+        return "".join(parts)
+
+    def _on_label_activate_link(self, label: Gtk.Label, uri: str) -> bool:
+        """Open an activated link from message text."""
+        try:
+            Gio.AppInfo.launch_default_for_uri(uri, None)
+            return True
+        except Exception as error:
+            logger.exception("Failed to open URI %s: %s", uri, error)
+            return False
+
     def _build_text_label(self, text: str) -> Gtk.Label:
         """Build a wrapped selectable text label."""
-        label = Gtk.Label(label=text)
+        label = Gtk.Label()
+        label.set_markup(self._linkify_text(text))
+        label.connect("activate-link", self._on_label_activate_link)
         label.set_xalign(0)
         label.set_wrap(True)
         label.set_wrap_mode(True)
@@ -447,19 +474,19 @@ class MessageRow(Gtk.ListBoxRow):
 
     def _build_media_content(self) -> Gtk.Widget | None:
         """Build the media portion of a message, if any."""
-        if self.message.voice:
+        if self.message.voice and self._is_real_document_message():
             return self._build_voice_widget()
 
-        if self.message.photo:
+        if self._is_real_photo_message():
             return MediaDownloadWidget(self.message, self._media_manager, "photo")
 
-        if self.message.video:
+        if self.message.video and self._is_real_document_message():
             return MediaDownloadWidget(self.message, self._media_manager, "video")
 
-        if self.message.audio:
+        if self.message.audio and self._is_real_document_message():
             return MediaDownloadWidget(self.message, self._media_manager, "audio")
 
-        if self.message.document:
+        if self.message.document and self._is_real_document_message():
             return MediaDownloadWidget(self.message, self._media_manager, "document")
 
         return None
@@ -612,15 +639,15 @@ class MessageRow(Gtk.ListBoxRow):
                 reply_prefix = "Reply: "
 
         media_description = None
-        if self.message.voice:
+        if self.message.voice and self._is_real_document_message():
             media_description = "Voice message"
-        elif self.message.photo:
+        elif self._is_real_photo_message():
             media_description = "Photo"
-        elif self.message.video:
+        elif self.message.video and self._is_real_document_message():
             media_description = "Video"
-        elif self.message.audio:
+        elif self.message.audio and self._is_real_document_message():
             media_description = "Audio"
-        elif self.message.document:
+        elif self.message.document and self._is_real_document_message():
             media_description = "Document"
         elif self.message.sticker:
             media_description = "Sticker"
@@ -2085,20 +2112,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._reply_to_label.set_label(f"Replying to {sender}")
 
         # Set preview text
-        if message.text:
-            preview = message.text[:60]
-            if len(message.text) > 60:
-                preview += "..."
-        elif message.voice:
-            preview = "Voice message"
-        elif message.photo:
-            preview = "Photo"
-        elif message.video:
-            preview = "Video"
-        elif message.document:
-            preview = "Document"
-        else:
-            preview = "Message"
+        preview = truncate_text(format_message_preview(message), 60)
         self._reply_preview_label.set_label(preview)
 
         # Show reply indicator
@@ -3581,20 +3595,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._reply_to_label.set_label(f"Replying to {sender}")
 
         # Set preview text
-        if message.text:
-            preview = message.text[:60]
-            if len(message.text) > 60:
-                preview += "..."
-        elif message.voice:
-            preview = "Voice message"
-        elif message.photo:
-            preview = "Photo"
-        elif message.video:
-            preview = "Video"
-        elif message.document:
-            preview = "Document"
-        else:
-            preview = "Message"
+        preview = truncate_text(format_message_preview(message), 60)
         self._reply_preview_label.set_label(preview)
 
         # Show reply indicator
