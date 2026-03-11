@@ -30,5 +30,11 @@ Thumbs.db
 *.session
 *.session-journal
 
+# Arch packaging
+pkg/
+src/
+*.pkg.tar.*
+*.src.tar.*
+
 # Claude
 .claude/
