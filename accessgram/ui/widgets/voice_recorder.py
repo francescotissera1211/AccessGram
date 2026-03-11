@@ -29,14 +29,14 @@ class VoiceRecorderWidget(Gtk.Box):
 
     def __init__(
         self,
-        on_recording_complete: Callable[[Path], None] | None = None,
+        on_recording_complete: Callable[[Path, int], None] | None = None,
         on_recording_cancelled: Callable[[], None] | None = None,
         shortcut_sends_immediately: bool = False,
     ) -> None:
         """Initialize the voice recorder widget.
 
         Args:
-            on_recording_complete: Called with the recorded file path when done.
+            on_recording_complete: Called with the recorded file path and duration when done.
             on_recording_cancelled: Called when recording is cancelled.
             shortcut_sends_immediately: Whether the recording shortcut should
                 send immediately when stopping instead of entering review mode.
@@ -48,6 +48,7 @@ class VoiceRecorderWidget(Gtk.Box):
         self._recorder = get_recorder()
         self._duration_timer: int | None = None
         self._pending_output_path: Path | None = None
+        self._pending_duration_seconds: int | None = None
 
         self._build_ui()
 
@@ -190,6 +191,7 @@ class VoiceRecorderWidget(Gtk.Box):
         self._stack.set_visible_child_name("idle")
         self._reset_ui()
         self._pending_output_path = None
+        self._pending_duration_seconds = None
 
         if self._on_recording_cancelled:
             self._on_recording_cancelled()
@@ -200,6 +202,7 @@ class VoiceRecorderWidget(Gtk.Box):
 
     def _finalize_recording_for_review(self) -> None:
         """Stop recording and enter review mode."""
+        duration_seconds = self._capture_recording_duration_seconds()
         self._stop_duration_timer()
         output_path = self._recorder.stop()
         if not output_path:
@@ -208,34 +211,38 @@ class VoiceRecorderWidget(Gtk.Box):
             return
 
         self._pending_output_path = output_path
+        self._pending_duration_seconds = duration_seconds
         self._review_label.set_label(f"Voice message ready ({self._duration_label.get_label()})")
         self._stack.set_visible_child_name("review")
         self._level_bar.set_value(0)
         self._review_send_button.grab_focus()
 
-    def _send_recording(self, output_path: Path | None) -> None:
+    def _send_recording(self, output_path: Path | None, duration_seconds: int | None = None) -> None:
         """Send a finished recording file if one exists."""
         self._stack.set_visible_child_name("idle")
         self._reset_ui()
         self._pending_output_path = None
+        self._pending_duration_seconds = None
 
         if output_path and self._on_recording_complete:
-            self._on_recording_complete(output_path)
+            self._on_recording_complete(output_path, max(1, int(duration_seconds or 0)))
 
     def _on_send_clicked(self, button: Gtk.Button) -> None:
         """Stop recording and send immediately from the button."""
+        duration_seconds = self._capture_recording_duration_seconds()
         self._stop_duration_timer()
         output_path = self._recorder.stop()
-        self._send_recording(output_path)
+        self._send_recording(output_path, duration_seconds)
 
     def _on_review_send_clicked(self, button: Gtk.Button) -> None:
         """Send a recording from review mode."""
-        self._send_recording(self._pending_output_path)
+        self._send_recording(self._pending_output_path, self._pending_duration_seconds)
 
     def _discard_pending_review(self) -> None:
         """Discard the reviewed recording and return to idle."""
         output_path = self._pending_output_path
         self._pending_output_path = None
+        self._pending_duration_seconds = None
         self._stack.set_visible_child_name("idle")
         self._reset_ui()
 
@@ -273,6 +280,10 @@ class VoiceRecorderWidget(Gtk.Box):
 
         GLib.idle_add(update)
 
+    def _capture_recording_duration_seconds(self) -> int:
+        """Capture the current recording duration as a positive whole number."""
+        return max(1, int(round(self._recorder.get_duration())))
+
     def _on_recorder_error(self, error: str) -> None:
         """Handle recorder errors."""
         logger.error("Recording error: %s", error)
@@ -282,6 +293,7 @@ class VoiceRecorderWidget(Gtk.Box):
             self._stop_duration_timer()
             self._reset_ui()
             self._pending_output_path = None
+            self._pending_duration_seconds = None
             return False
 
         GLib.idle_add(update)

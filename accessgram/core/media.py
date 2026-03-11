@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from telethon.tl.types import Message
+from telethon.tl.types import DocumentAttributeAudio, Message
 
 from accessgram.utils.config import get_cache_dir, get_downloads_dir
 
@@ -162,6 +162,7 @@ class MediaManager:
         self,
         chat: Any,
         voice_path: Path,
+        duration_seconds: int | None = None,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> Message:
         """Send a voice message.
@@ -169,6 +170,7 @@ class MediaManager:
         Args:
             chat: The chat entity to send to.
             voice_path: Path to the OGG/Opus voice file.
+            duration_seconds: Explicit duration metadata for the voice note.
             progress_callback: Called with (uploaded_bytes, total_bytes).
 
         Returns:
@@ -181,10 +183,20 @@ class MediaManager:
         logger.info("Sending voice message: %s", voice_path)
 
         try:
+            attributes = None
+            if duration_seconds is not None:
+                attributes = [
+                    DocumentAttributeAudio(
+                        duration=max(1, int(duration_seconds)),
+                        voice=True,
+                    )
+                ]
+
             result = await self._client._client.send_file(
                 chat,
                 str(voice_path),
                 voice_note=True,
+                attributes=attributes,
                 progress_callback=lambda current, total: self._on_progress(
                     0, current, total, progress_callback
                 ),

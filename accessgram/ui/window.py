@@ -3265,7 +3265,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._announcer.announce(f"Failed to send file: {error}")
         logger.exception("Failed to send file: %s", error)
 
-    def _on_voice_recording_complete(self, voice_path: Path) -> None:
+    def _on_voice_recording_complete(self, voice_path: Path, duration_seconds: int) -> None:
         """Handle completed voice recording."""
         if not self._current_dialog:
             self._announcer.announce("No chat selected")
@@ -3275,10 +3275,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self._announcer.announce("Sending voice message")
 
         create_task_with_callback(
-            self._client.send_file(
+            self._media_manager.send_voice(
                 self._current_dialog.entity,
                 voice_path,
-                voice_note=True,
+                duration_seconds=duration_seconds,
             ),
             self._on_voice_sent,
             self._on_voice_send_error,
