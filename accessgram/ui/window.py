@@ -436,36 +436,49 @@ class MessageRow(Gtk.ListBoxRow):
                 return self.message.sender.title or "Unknown"
         return "Unknown"
 
-    def _build_content(self) -> Gtk.Widget:
-        """Build the message content widget."""
-        # Text message
-        if self.message.text:
-            label = Gtk.Label(label=self.message.text)
-            label.set_xalign(0)
-            label.set_wrap(True)
-            label.set_wrap_mode(True)
-            label.set_selectable(True)
-            return label
+    def _build_text_label(self, text: str) -> Gtk.Label:
+        """Build a wrapped selectable text label."""
+        label = Gtk.Label(label=text)
+        label.set_xalign(0)
+        label.set_wrap(True)
+        label.set_wrap_mode(True)
+        label.set_selectable(True)
+        return label
 
-        # Voice message
+    def _build_media_content(self) -> Gtk.Widget | None:
+        """Build the media portion of a message, if any."""
         if self.message.voice:
             return self._build_voice_widget()
 
-        # Photo
         if self.message.photo:
             return MediaDownloadWidget(self.message, self._media_manager, "photo")
 
-        # Video
         if self.message.video:
             return MediaDownloadWidget(self.message, self._media_manager, "video")
 
-        # Audio
         if self.message.audio:
             return MediaDownloadWidget(self.message, self._media_manager, "audio")
 
-        # Document
         if self.message.document:
             return MediaDownloadWidget(self.message, self._media_manager, "document")
+
+        return None
+
+    def _build_content(self) -> Gtk.Widget:
+        """Build the message content widget."""
+        media_widget = self._build_media_content()
+
+        if media_widget:
+            if self.message.text:
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                box.append(media_widget)
+                box.append(self._build_text_label(self.message.text))
+                return box
+            return media_widget
+
+        # Text-only message
+        if self.message.text:
+            return self._build_text_label(self.message.text)
 
         # Sticker
         if self.message.sticker:
@@ -598,18 +611,26 @@ class MessageRow(Gtk.ListBoxRow):
             else:
                 reply_prefix = "Reply: "
 
-        if self.message.text:
-            content = self.message.text
-        elif self.message.voice:
-            content = "Voice message"
+        media_description = None
+        if self.message.voice:
+            media_description = "Voice message"
         elif self.message.photo:
-            content = "Photo"
+            media_description = "Photo"
         elif self.message.video:
-            content = "Video"
+            media_description = "Video"
+        elif self.message.audio:
+            media_description = "Audio"
         elif self.message.document:
-            content = "Document"
+            media_description = "Document"
         elif self.message.sticker:
-            content = "Sticker"
+            media_description = "Sticker"
+
+        if media_description and self.message.text:
+            content = f"{media_description} with caption: {self.message.text}"
+        elif self.message.text:
+            content = self.message.text
+        elif media_description:
+            content = media_description
         else:
             content = "Message"
 
