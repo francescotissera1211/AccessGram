@@ -704,6 +704,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._oldest_loaded_message_id: int | None = None
         self._history_exhausted = False
         self._loading_older_messages = False
+        self._chat_session_token = 0
         self._typing_activity_state: dict[int, dict[int, tuple[str, str, float]]] = {}
         self._last_typing_summary: dict[int, str] = {}
 
@@ -1718,6 +1719,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_chat_activated(self, listbox: Gtk.ListBox, row: ChatRow) -> None:
         """Handle chat selection."""
         self._current_dialog = row.dialog
+        self._chat_session_token += 1
         self._show_chat_view()
         run_async(self._load_messages())
 
@@ -1735,6 +1737,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _close_current_chat(self) -> None:
         """Return the window to its no-chat-selected state."""
+        self._chat_session_token += 1
         self._current_dialog = None
         self._clear_reply()
         self._clear_edit()
@@ -1764,7 +1767,11 @@ class MainWindow(Gtk.ApplicationWindow):
         if not self._current_dialog:
             return
 
-        chat_name = self._current_dialog.name
+        dialog = self._current_dialog
+        chat_name = dialog.name
+        chat_id = dialog.id
+        chat_entity = dialog.entity
+        session_token = self._chat_session_token
 
         try:
             # Clear existing messages
@@ -1782,9 +1789,14 @@ class MainWindow(Gtk.ApplicationWindow):
 
             # Load messages (newest first, then reverse for display)
             messages = await self._client.get_messages(
-                self._current_dialog.entity,
+                chat_entity,
                 limit=self._config.max_messages_to_load,
             )
+
+            if self._chat_session_token != session_token:
+                return
+            if not self._current_dialog or self._current_dialog.id != chat_id:
+                return
 
             message_ids = [message.id for message in messages if getattr(message, "id", None)]
             self._oldest_loaded_message_id = min(message_ids) if message_ids else None
@@ -1810,9 +1822,14 @@ class MainWindow(Gtk.ApplicationWindow):
 
             # Mark messages as read
             try:
-                await self._client.mark_read(self._current_dialog.entity)
+                await self._client.mark_read(chat_entity)
             except Exception as e:
                 logger.debug("Could not mark messages as read: %s", e)
+
+            if self._chat_session_token != session_token:
+                return
+            if not self._current_dialog or self._current_dialog.id != chat_id:
+                return
 
             # Update the unread count in the chat list
             if self._current_dialog.unread_count > 0:
@@ -1825,13 +1842,18 @@ class MainWindow(Gtk.ApplicationWindow):
             logger.exception("Error loading messages: %s", e)
 
         finally:
-            # Always focus message entry and announce (must be on main thread)
-            def focus_and_announce():
-                self._message_entry.grab_focus()
-                self._announcer.announce(f"Opened chat with {chat_name}")
-                return False
+            if self._chat_session_token == session_token and self._current_dialog and self._current_dialog.id == chat_id:
+                # Always focus message entry and announce (must be on main thread)
+                def focus_and_announce():
+                    if self._chat_session_token != session_token:
+                        return False
+                    if not self._current_dialog or self._current_dialog.id != chat_id:
+                        return False
+                    self._message_entry.grab_focus()
+                    self._announcer.announce(f"Opened chat with {chat_name}")
+                    return False
 
-            GLib.idle_add(focus_and_announce)
+                GLib.idle_add(focus_and_announce)
 
     async def _load_older_messages(self) -> None:
         """Load an older page of messages for the current chat."""
@@ -2222,13 +2244,19 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Add to message view if current chat
         if is_current_chat:
+            current_session_token = self._chat_session_token
             # Fetch sender and reply message, then add to view
-            run_async(self._prepare_and_add_message(message, chat_id))
+            run_async(self._prepare_and_add_message(message, chat_id, current_session_token))
             # Mark as read since we're viewing this chat
             if not message.out:
                 run_async(self._client.mark_read(self._current_dialog.entity))
 
-    async def _prepare_and_add_message(self, message: Any, chat_id: int) -> None:
+    async def _prepare_and_add_message(
+        self,
+        message: Any,
+        chat_id: int,
+        session_token: int,
+    ) -> None:
         """Fetch sender and reply message, then add the message row."""
         # Fetch sender if not available
         if not message.sender:
@@ -2247,6 +2275,11 @@ class MainWindow(Gtk.ApplicationWindow):
                     message.reply_to_msg = reply_msg
             except Exception as e:
                 logger.debug("Could not fetch reply message: %s", e)
+
+        if self._chat_session_token != session_token:
+            return
+        if not self._current_dialog or self._current_dialog.id != chat_id:
+            return
 
         GLib.idle_add(self._add_message_row, message)
 
@@ -2592,6 +2625,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Set this as current dialog and show the chat view
         self._current_dialog = pseudo_dialog
+        self._chat_session_token += 1
         self._show_chat_view()
 
         # Clear existing messages
