@@ -102,12 +102,14 @@ class ChatRow(Gtk.ListBoxRow):
         right_box.set_valign(Gtk.Align.CENTER)
 
         # Time of last message
+        self._time_label = Gtk.Label()
+        self._time_label.add_css_class("dim-label")
+        self._time_label.add_css_class("caption")
+        self._time_label.set_visible(False)
         if self.dialog.message and self.dialog.message.date:
-            time_str = self._format_time(self.dialog.message.date)
-            time_label = Gtk.Label(label=time_str)
-            time_label.add_css_class("dim-label")
-            time_label.add_css_class("caption")
-            right_box.append(time_label)
+            self._time_label.set_label(self._format_time(self.dialog.message.date))
+            self._time_label.set_visible(True)
+        right_box.append(self._time_label)
 
         # Muted indicator
         self._muted_label = Gtk.Label(label="(muted)")
@@ -260,6 +262,13 @@ class ChatRow(Gtk.ListBoxRow):
         self.dialog = dialog
         self._name_label.set_label(dialog.name or "Unknown")
         self._preview_label.set_label(self._get_preview_text())
+
+        if dialog.message and dialog.message.date:
+            self._time_label.set_label(self._format_time(dialog.message.date))
+            self._time_label.set_visible(True)
+        else:
+            self._time_label.set_label("")
+            self._time_label.set_visible(False)
 
         # Update unread badge
         if dialog.unread_count > 0:
