@@ -2858,6 +2858,10 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _add_message_row(self, message: Any) -> bool:
         """Add a message row (called from main thread)."""
+        # Skip if this message is already displayed (e.g., outgoing message
+        # added by _on_message_sent before the NewMessage event arrives)
+        if message.id and message.id in self._message_rows:
+            return False
         if message.text or message.media:
             row = MessageRow(message, self._media_manager, self._client)
             self._messages_listbox.append(row)
