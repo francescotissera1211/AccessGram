@@ -24,6 +24,7 @@ from telethon.tl.types import (
 )
 
 from accessgram.utils.config import Config, get_session_path
+from accessgram.utils.formatting import to_local_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -586,8 +587,8 @@ class AccessGramClient:
         if status == "online":
             return "online"
         elif status == "offline" and status_info["was_online"]:
-            was_online = status_info["was_online"]
-            now = datetime.now(was_online.tzinfo) if was_online.tzinfo else datetime.now()
+            was_online = to_local_datetime(status_info["was_online"])
+            now = datetime.now().astimezone() if was_online.tzinfo else datetime.now()
             delta = now - was_online
 
             if delta.total_seconds() < 60:

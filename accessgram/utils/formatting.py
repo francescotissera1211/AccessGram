@@ -10,6 +10,20 @@ from typing import Any
 from telethon.tl import types as tl_types
 
 
+def to_local_datetime(dt: datetime | None) -> datetime | None:
+    """Convert an aware datetime to the current local timezone.
+
+    Naive datetimes are returned unchanged.
+    """
+    if dt is None:
+        return None
+
+    if dt.tzinfo:
+        return dt.astimezone()
+
+    return dt
+
+
 def format_timestamp(dt: datetime, include_date: bool = False) -> str:
     """Format a datetime for display.
 
@@ -23,22 +37,23 @@ def format_timestamp(dt: datetime, include_date: bool = False) -> str:
     if dt is None:
         return ""
 
-    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
-    delta = now - dt
+    local_dt = to_local_datetime(dt)
+    now = datetime.now().astimezone() if local_dt.tzinfo else datetime.now()
+    delta = now - local_dt
 
     if include_date:
-        return dt.strftime("%d %b %Y, %H:%M")
+        return local_dt.strftime("%d %b %Y, %H:%M")
 
     if delta.days == 0:
-        return dt.strftime("%H:%M")
+        return local_dt.strftime("%H:%M")
     elif delta.days == 1:
-        return f"Yesterday {dt.strftime('%H:%M')}"
+        return f"Yesterday {local_dt.strftime('%H:%M')}"
     elif delta.days < 7:
-        return dt.strftime("%a %H:%M")
-    elif dt.year == now.year:
-        return dt.strftime("%d %b, %H:%M")
+        return local_dt.strftime("%a %H:%M")
+    elif local_dt.year == now.year:
+        return local_dt.strftime("%d %b, %H:%M")
     else:
-        return dt.strftime("%d %b %Y, %H:%M")
+        return local_dt.strftime("%d %b %Y, %H:%M")
 
 
 def format_relative_time(dt: datetime) -> str:
@@ -53,8 +68,9 @@ def format_relative_time(dt: datetime) -> str:
     if dt is None:
         return ""
 
-    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
-    delta = now - dt
+    local_dt = to_local_datetime(dt)
+    now = datetime.now().astimezone() if local_dt.tzinfo else datetime.now()
+    delta = now - local_dt
 
     if delta < timedelta(seconds=60):
         return "just now"

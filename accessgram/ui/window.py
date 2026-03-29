@@ -32,7 +32,7 @@ from accessgram.ui.widgets.voice_player import VoicePlayerWidget
 from accessgram.ui.widgets.voice_recorder import VoiceRecorderWidget
 from accessgram.utils.async_bridge import create_task_with_callback, run_async
 from accessgram.utils.config import Config, get_cache_dir
-from accessgram.utils.formatting import format_message_preview, truncate_text
+from accessgram.utils.formatting import format_message_preview, to_local_datetime, truncate_text
 
 logger = logging.getLogger(__name__)
 URL_PATTERN = re.compile(r"https?://[^\s<>()]+")
@@ -157,17 +157,18 @@ class ChatRow(Gtk.ListBoxRow):
 
     def _format_time(self, dt: datetime) -> str:
         """Format a datetime for display."""
-        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
-        delta = now - dt
+        local_dt = to_local_datetime(dt)
+        now = datetime.now().astimezone() if local_dt.tzinfo else datetime.now()
+        delta = now - local_dt
 
         if delta.days == 0:
-            return dt.strftime("%H:%M")
+            return local_dt.strftime("%H:%M")
         elif delta.days == 1:
             return "Yesterday"
         elif delta.days < 7:
-            return dt.strftime("%a")
+            return local_dt.strftime("%a")
         else:
-            return dt.strftime("%d/%m/%y")
+            return local_dt.strftime("%d/%m/%y")
 
     def _update_status_display(self) -> None:
         """Update the status display for private chats."""
@@ -330,7 +331,7 @@ class MessageRow(Gtk.ListBoxRow):
         header.append(sender_label)
 
         if self.message.date:
-            time_str = self.message.date.strftime("%H:%M")
+            time_str = to_local_datetime(self.message.date).strftime("%H:%M")
             time_label = Gtk.Label(label=time_str)
             time_label.add_css_class("dim-label")
             time_label.add_css_class("caption")
@@ -630,7 +631,7 @@ class MessageRow(Gtk.ListBoxRow):
     def _update_accessibility(self) -> None:
         """Update accessible properties."""
         sender = self._get_sender_name()
-        time_str = self.message.date.strftime("%H:%M") if self.message.date else ""
+        time_str = to_local_datetime(self.message.date).strftime("%H:%M") if self.message.date else ""
 
         # Check if this is a reply
         reply_prefix = ""
